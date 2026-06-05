@@ -77,7 +77,7 @@ namespace AssetParser.Commands
                     {
                         parentClass = ResolvePackageIndex(asset, classExport.SuperStruct);
                         if (parentClass.Contains("_C"))
-                            parentClass = parentClass.Replace("_C", "");
+                            parentClass = parentClass.EndsWith("_C") ? parentClass[..^2] : parentClass;
                     }
                     if (parentClass == "Unknown" || parentClass == "[null]")
                     {
@@ -89,7 +89,7 @@ namespace AssetParser.Commands
                             if (importName == bpClassName) continue;
                             if ((importClass == "Class" || importClass == "BlueprintGeneratedClass") && importName.EndsWith("_C"))
                             {
-                                parentClass = importName.Replace("_C", "");
+                                parentClass = importName.EndsWith("_C") ? importName[..^2] : importName;
                                 break;
                             }
                         }

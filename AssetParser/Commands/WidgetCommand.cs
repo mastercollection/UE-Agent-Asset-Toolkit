@@ -63,7 +63,7 @@ namespace AssetParser.Commands
             {
                 parentClass = ResolvePackageIndex(asset, classExport.SuperStruct);
                 if (parentClass.Contains("_C"))
-                    parentClass = parentClass.Replace("_C", "");
+                    parentClass = parentClass.EndsWith("_C") ? parentClass[..^2] : parentClass;
             }
         
             // Strategy 2: Check ParentClass property on ANY NormalExport that might be the blueprint
@@ -82,7 +82,7 @@ namespace AssetParser.Commands
                                 var resolved = ResolvePackageIndex(asset, objProp.Value);
                                 if (!string.IsNullOrEmpty(resolved) && resolved != "[null]")
                                 {
-                                    parentClass = resolved.Replace("_C", "");
+                                    parentClass = resolved.EndsWith("_C") ? resolved[..^2] : resolved;
                                     break;
                                 }
                             }

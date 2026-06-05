@@ -63,7 +63,7 @@ namespace AssetParser.Commands
                 parentClass = ResolvePackageIndex(asset, classExport.SuperStruct);
                 // Clean up the parent class name
                 if (parentClass.Contains("_C"))
-                    parentClass = parentClass.Replace("_C", "");
+                    parentClass = parentClass.EndsWith("_C") ? parentClass[..^2] : parentClass;
             }
         
             // Fallback: Look for parent class in imports if SuperStruct didn't work
@@ -83,13 +83,13 @@ namespace AssetParser.Commands
                     // Look for Class imports that end in _C (compiled blueprint classes)
                     if (importClass == "Class" && importName.EndsWith("_C"))
                     {
-                        parentClass = importName.Replace("_C", "");
+                        parentClass = importName.EndsWith("_C") ? importName[..^2] : importName;
                         break;
                     }
                     // Look for BlueprintGeneratedClass imports
                     if (importClass == "BlueprintGeneratedClass" && importName.EndsWith("_C"))
                     {
-                        parentClass = importName.Replace("_C", "");
+                        parentClass = importName.EndsWith("_C") ? importName[..^2] : importName;
                         break;
                     }
                 }
@@ -107,7 +107,7 @@ namespace AssetParser.Commands
                             var resolved = ResolvePackageIndex(asset, objProp.Value);
                             if (!string.IsNullOrEmpty(resolved) && resolved != "[null]")
                             {
-                                parentClass = resolved.Replace("_C", "");
+                                parentClass = resolved.EndsWith("_C") ? resolved[..^2] : resolved;
                                 break;
                             }
                         }
@@ -177,7 +177,7 @@ namespace AssetParser.Commands
                     // Clean up type name
                     var typeName = className;
                     if (typeName.Contains("_C"))
-                        typeName = typeName.Replace("_C", "");
+                        typeName = typeName.EndsWith("_C") ? typeName[..^2] : typeName;
                     components.Add((exportName, typeName));
                 }
             }
