@@ -224,6 +224,88 @@ def cmd_rebuild_fts(args):
         conn.close()
 
 
+def cmd_prune(args):
+    """Reconcile the index with the filesystem, removing ghost entries.
+
+    Incremental and --force indexing only walk files that exist on disk, so
+    deleted/moved assets linger as ghost rows (e.g. a moved Blueprint shows up
+    under both its old and new path). This rebuilds nothing; it just deletes
+    index rows whose backing asset is gone.
+    """
+    from unreal_agent import tools
+    from unreal_agent.knowledge_index import KnowledgeStore, AssetIndexer
+
+    project_name = args.project or tools.get_active_project_name()
+    if not project_name:
+        print("No project configured.")
+        print("Add a project with: unreal-agent-toolkit add /path/to/Project.uproject")
+        sys.exit(1)
+
+    db_path = Path(tools.get_project_db_path(project_name))
+    if not db_path.exists():
+        print(f"Index not found for project '{project_name}'")
+        print(f"Expected at: {db_path}")
+        sys.exit(1)
+
+    project_root = Path(os.path.dirname(tools.PROJECT))
+    content_path = project_root / "Content"
+    if not content_path.exists():
+        print("ERROR: Could not find Content folder")
+        sys.exit(1)
+
+    # Mirror cmd_index plugin discovery so plugin virtual paths resolve too.
+    plugin_paths = []
+    plugins_dir = project_root / "Plugins"
+    if plugins_dir.exists():
+        for content_dir in plugins_dir.rglob("Content"):
+            if content_dir.is_dir() and any(content_dir.rglob("*.uasset")):
+                mount_point = content_dir.parent.name
+                if not any(mp == mount_point for mp, _ in plugin_paths):
+                    plugin_paths.append((mount_point, content_dir))
+
+    print(f"Pruning ghost entries for: {project_name}")
+    print(f"Database: {db_path}")
+    print()
+
+    store = KnowledgeStore(db_path)
+    indexer = AssetIndexer(
+        store,
+        content_path,
+        plugin_paths=plugin_paths if plugin_paths else None,
+    )
+
+    def path_exists(game_path: str) -> bool:
+        return indexer._game_path_to_fs(game_path).exists()
+
+    print("Reconciling index against filesystem...")
+    result = store.prune_missing(path_exists)
+
+    removed = (
+        result["docs_removed"]
+        + result["lightweight_removed"]
+        + result["file_meta_removed"]
+    )
+    if removed == 0:
+        print("No ghost entries found. Index is in sync with disk.")
+        return
+
+    print(
+        f"  Removed {result['docs_removed']} docs, "
+        f"{result['lightweight_removed']} lightweight, "
+        f"{result['file_meta_removed']} file_meta, "
+        f"{result['edges_removed']} edges."
+    )
+    if result["sample"]:
+        print("  Sample of pruned paths:")
+        for p in result["sample"]:
+            print(f"    {p}")
+
+    if store.is_fts_dirty():
+        print("Rebuilding FTS5 index...")
+        store.rebuild_fts()
+        print("  Done")
+
+
 def _resolve_index_options(args):
     """Resolve CLI args + saved config + env into effective index options.
 
@@ -881,6 +963,12 @@ Examples:
     parser.add_argument(
         "--status", action="store_true", help="Show detailed index statistics"
     )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="Remove ghost entries for assets deleted/moved on disk "
+        "(reconcile index with filesystem; neither incremental nor --force does this)",
+    )
     parser.add_argument("--project", help="Override active project for this command")
     parser.add_argument(
         "--timing",
@@ -965,6 +1053,8 @@ Examples:
         cmd_dry_run(args)
     elif getattr(args, "status", False):
         cmd_status(args)
+    elif getattr(args, "prune", False):
+        cmd_prune(args)
     else:
         cmd_index(args)
 

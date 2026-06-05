@@ -1483,6 +1483,94 @@ class KnowledgeStore:
                 )
             conn.commit()
 
+    def prune_missing(self, path_exists) -> dict:
+        """Remove index entries whose source asset no longer exists on disk.
+
+        Neither incremental nor --force indexing reconciles deletions: both
+        only walk files that exist, so an asset that was moved or deleted
+        lingers in the index (ghost/orphan rows, e.g. both old and new paths
+        returned for a moved Blueprint). This reconciles the index against the
+        filesystem and deletes the stragglers.
+
+        Args:
+            path_exists: callback (game_path: str) -> bool, True if the asset
+                backing that virtual path still exists on disk. file_meta is
+                checked directly via its stored absolute path.
+
+        Returns:
+            dict with removal counts and a small sample of pruned paths.
+        """
+        with self._write_lock:
+            conn = self._get_write_connection()
+            try:
+                # docs: capture doc_id so we can also drop their edges
+                missing_docs = [
+                    (row["doc_id"], row["path"])
+                    for row in conn.execute("SELECT doc_id, path FROM docs")
+                    if not path_exists(row["path"])
+                ]
+                missing_doc_ids = [d for d, _ in missing_docs]
+                missing_lw = [
+                    row["path"]
+                    for row in conn.execute("SELECT path FROM lightweight_assets")
+                    if not path_exists(row["path"])
+                ]
+                # file_meta keys on the absolute fs path, so check it directly
+                missing_fm = [
+                    row["path"]
+                    for row in conn.execute("SELECT path FROM file_meta")
+                    if not os.path.exists(row["path"])
+                ]
+
+                edges_removed = 0
+
+                def _delete_in(table, column, values):
+                    nonlocal edges_removed
+                    removed = 0
+                    for i in range(0, len(values), 500):
+                        chunk = values[i : i + 500]
+                        ph = ",".join("?" * len(chunk))
+                        cur = conn.execute(
+                            f"DELETE FROM {table} WHERE {column} IN ({ph})", chunk
+                        )
+                        removed += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                    return removed
+
+                has_embeddings = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='docs_embeddings'"
+                ).fetchone()
+                if missing_doc_ids:
+                    _delete_in("docs", "doc_id", missing_doc_ids)
+                    if has_embeddings:
+                        _delete_in("docs_embeddings", "doc_id", missing_doc_ids)
+                    edges_removed += _delete_in("edges", "from_id", missing_doc_ids)
+                    edges_removed += _delete_in("edges", "to_id", missing_doc_ids)
+                if missing_lw:
+                    _delete_in("lightweight_assets", "path", missing_lw)
+                    _delete_in("lightweight_refs", "asset_path", missing_lw)
+                # asset_tags is keyed on the virtual path shared by docs/lightweight
+                gone_paths = [p for _, p in missing_docs] + missing_lw
+                if gone_paths:
+                    _delete_in("asset_tags", "path", gone_paths)
+                if missing_fm:
+                    _delete_in("file_meta", "path", missing_fm)
+
+                if missing_doc_ids:
+                    self._set_fts_dirty(conn)
+                conn.commit()
+            finally:
+                self._reset_write_connection()
+
+        sample = [p for _, p in missing_docs][:10] or missing_lw[:10]
+        return {
+            "docs_removed": len(missing_doc_ids),
+            "lightweight_removed": len(missing_lw),
+            "file_meta_removed": len(missing_fm),
+            "edges_removed": edges_removed,
+            "sample": sample,
+        }
+
     # =========================================================================
     # LIGHTWEIGHT ASSETS - Path + refs only, for low-value asset types
     # =========================================================================
