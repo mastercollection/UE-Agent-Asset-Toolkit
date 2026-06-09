@@ -372,6 +372,11 @@ namespace AssetParser.Commands
                 ["K2Node_ComponentBoundEvent"] = new[] { "DelegatePropertyName" },
                 ["K2Node_CallDelegate"] = new[] { "DelegateReference" },
                 ["K2Node_CreateDelegate"] = new[] { "SelectedFunctionName" },
+                // Operators: PromotableOperator stores the operation as an FName ("Add",
+                // "Less", ...); CommutativeAssociativeBinaryOperator stores a FunctionReference
+                // (like CallFunction). Without these the operator identity is lost on extraction.
+                ["K2Node_PromotableOperator"] = new[] { "OperationName" },
+                ["K2Node_CommutativeAssociativeBinaryOperator"] = new[] { "FunctionReference" },
             };
 
             string ResolveNodeTarget(NormalExport node, string nodeType)
