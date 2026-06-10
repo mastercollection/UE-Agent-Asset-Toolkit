@@ -432,12 +432,13 @@ namespace AssetParser.Commands
                     }
                 }
 
-                // K2Node_AddDelegate (bind a delegate to an event dispatcher): the dispatcher is the
-                // DelegateReference. Emit just the member name for SELF-context dispatchers
-                // (MemberParent absent). External-class dispatchers (a component/widget event
-                // dispatcher) are left unresolved (null) — only the self-context case is materialized;
-                // the external case would need class encoding (follow-up).
-                if (nodeType == "K2Node_AddDelegate")
+                // Multicast-delegate ops (AddDelegate/RemoveDelegate/ClearDelegate/AssignDelegate):
+                // the dispatcher is the DelegateReference. Emit just the member name for SELF-context
+                // dispatchers (MemberParent absent). External-class dispatchers (a component/widget
+                // event dispatcher) are left unresolved (null) — only the self-context case is
+                // materialized; the external case would need class encoding (follow-up).
+                if (nodeType == "K2Node_AddDelegate" || nodeType == "K2Node_RemoveDelegate"
+                    || nodeType == "K2Node_ClearDelegate" || nodeType == "K2Node_AssignDelegate")
                 {
                     var dref = node.Data?.FirstOrDefault(p => p.Name.ToString() == "DelegateReference") as StructPropertyData;
                     if (dref != null)
