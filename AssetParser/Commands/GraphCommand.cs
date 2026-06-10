@@ -377,6 +377,12 @@ namespace AssetParser.Commands
                 // (like CallFunction). Without these the operator identity is lost on extraction.
                 ["K2Node_PromotableOperator"] = new[] { "OperationName" },
                 ["K2Node_CommutativeAssociativeBinaryOperator"] = new[] { "FunctionReference" },
+                // Make/Break struct identify their struct via a StructType object ref ("Vector",
+                // "S_CharacterViewer_Data"); CallArrayFunction is a CallFunction variant whose
+                // identity is its FunctionReference's MemberName (Array_Get, Array_Add, ...).
+                ["K2Node_MakeStruct"] = new[] { "StructType" },
+                ["K2Node_BreakStruct"] = new[] { "StructType" },
+                ["K2Node_CallArrayFunction"] = new[] { "FunctionReference" },
             };
 
             string ResolveNodeTarget(NormalExport node, string nodeType)
