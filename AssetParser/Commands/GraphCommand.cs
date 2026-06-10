@@ -387,6 +387,25 @@ namespace AssetParser.Commands
 
             string ResolveNodeTarget(NormalExport node, string nodeType)
             {
+                // K2Node_Message (interface message call): the self pin is generic Object, so the
+                // interface can't be recovered from pins. Encode the FunctionReference's owning
+                // interface class and function name as "<InterfaceClass>:<Function>" so the message
+                // can be re-resolved (mirrors the MacroInstance "<library>:<macro>" form).
+                if (nodeType == "K2Node_Message")
+                {
+                    var fref = node.Data?.FirstOrDefault(p => p.Name.ToString() == "FunctionReference") as StructPropertyData;
+                    if (fref != null)
+                    {
+                        var mn = fref.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberName")?.ToString();
+                        var mp = fref.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberParent") as ObjectPropertyData;
+                        var cls = (mp?.Value != null && mp.Value.Index != 0) ? ResolvePackageIndex(asset, mp.Value) : null;
+                        if (!string.IsNullOrEmpty(mn) && mn != "None")
+                        {
+                            return string.IsNullOrEmpty(cls) ? mn : $"{cls}:{mn}";
+                        }
+                    }
+                }
+
                 if (!nodeTargetProps.TryGetValue(nodeType, out var propNames)) return null;
 
                 foreach (var propName in propNames)
