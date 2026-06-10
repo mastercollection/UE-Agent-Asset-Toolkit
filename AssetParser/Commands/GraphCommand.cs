@@ -399,6 +399,24 @@ namespace AssetParser.Commands
                 // interface can't be recovered from pins. Encode the FunctionReference's owning
                 // interface class and function name as "<InterfaceClass>:<Function>" so the message
                 // can be re-resolved (mirrors the MacroInstance "<library>:<macro>" form).
+                // K2Node_InputKey (key event node): the bound key lives in the FKey "InputKey"
+                // struct property, whose inner field is "KeyName" (not MemberName), so the generic
+                // struct handler can't see it. Emit the key name as the target (e.g. "SpaceBar").
+                // Modifier flags (bControl/bAlt/bShift/bCommand) are not encoded yet — two InputKey
+                // nodes differing only by modifier collapse to the same target (round-trip-neutral).
+                if (nodeType == "K2Node_InputKey")
+                {
+                    var ik = node.Data?.FirstOrDefault(p => p.Name.ToString() == "InputKey") as StructPropertyData;
+                    if (ik != null)
+                    {
+                        var keyName = ik.Value?.FirstOrDefault(p => p.Name.ToString() == "KeyName")?.ToString();
+                        if (!string.IsNullOrEmpty(keyName) && keyName != "None")
+                        {
+                            return keyName;
+                        }
+                    }
+                }
+
                 if (nodeType == "K2Node_Message")
                 {
                     var fref = node.Data?.FirstOrDefault(p => p.Name.ToString() == "FunctionReference") as StructPropertyData;
