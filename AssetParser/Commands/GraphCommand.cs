@@ -383,6 +383,10 @@ namespace AssetParser.Commands
                 ["K2Node_MakeStruct"] = new[] { "StructType" },
                 ["K2Node_BreakStruct"] = new[] { "StructType" },
                 ["K2Node_CallArrayFunction"] = new[] { "FunctionReference" },
+                // CallParentFunction is a CallFunction variant calling the parent's version of an
+                // overridden function; its identity is the FunctionReference MemberName (resolved
+                // against the blueprint's parent hierarchy on re-materialization).
+                ["K2Node_CallParentFunction"] = new[] { "FunctionReference" },
             };
 
             string ResolveNodeTarget(NormalExport node, string nodeType)
