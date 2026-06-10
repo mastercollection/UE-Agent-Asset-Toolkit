@@ -404,6 +404,25 @@ namespace AssetParser.Commands
                         {
                             return ResolvePackageIndex(asset, objProp.Value);
                         }
+                        // GraphReference (K2Node_MacroInstance.MacroGraphReference): the macro
+                        // identity is the referenced macro graph's name within its owning library.
+                        // MacroGraph resolves to the graph object name (e.g. "IsValid"); GraphBlueprint
+                        // resolves to the library package path. Emit "<libraryPath>:<macroName>" so the
+                        // reference is both readable and re-loadable.
+                        var graphGuidProp = structProp.Value?.FirstOrDefault(p => p.Name.ToString() == "GraphGuid");
+                        if (graphGuidProp != null)
+                        {
+                            var macroGraph = structProp.Value?.FirstOrDefault(p => p.Name.ToString() == "MacroGraph") as ObjectPropertyData;
+                            var graphBp = structProp.Value?.FirstOrDefault(p => p.Name.ToString() == "GraphBlueprint") as ObjectPropertyData;
+                            var macroName = (macroGraph?.Value != null && macroGraph.Value.Index != 0)
+                                ? ResolvePackageIndex(asset, macroGraph.Value) : null;
+                            var libPath = (graphBp?.Value != null && graphBp.Value.Index != 0)
+                                ? ResolveObjectRef(graphBp.Value)?.ToString() : null;
+                            if (!string.IsNullOrEmpty(macroName) && macroName != "None")
+                            {
+                                return string.IsNullOrEmpty(libPath) ? macroName : $"{libPath}:{macroName}";
+                            }
+                        }
                     }
                     // For name/string properties
                     else if (prop is NamePropertyData nameProp)
