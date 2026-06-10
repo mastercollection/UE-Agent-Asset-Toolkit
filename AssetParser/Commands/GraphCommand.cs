@@ -387,6 +387,10 @@ namespace AssetParser.Commands
                 // overridden function; its identity is the FunctionReference MemberName (resolved
                 // against the blueprint's parent hierarchy on re-materialization).
                 ["K2Node_CallParentFunction"] = new[] { "FunctionReference" },
+                // CallMaterialParameterCollectionFunction is a CallFunction variant for material-
+                // library calls (SetScalar/VectorParameterValue, CreateDynamicMaterialInstance, ...);
+                // identity is the FunctionReference MemberName, resolved against KismetMaterialLibrary.
+                ["K2Node_CallMaterialParameterCollectionFunction"] = new[] { "FunctionReference" },
             };
 
             string ResolveNodeTarget(NormalExport node, string nodeType)
