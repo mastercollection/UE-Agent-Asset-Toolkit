@@ -404,6 +404,23 @@ namespace AssetParser.Commands
                 case DoublePropertyData d: return d.Value.ToString("R", CultureInfo.InvariantCulture);
                 case StrPropertyData s: return s.Value?.ToString() ?? "";
                 case NamePropertyData n: return n.Value?.ToString() ?? "";
+                // FText (TextBlock.Text, Button labels, ...): the most common widget property. A Base
+                // history round-trips as NSLOCTEXT(namespace, key, source); a culture-invariant literal as
+                // INVTEXT. ImportText_Direct reparses both. Format histories (runtime-built text) are
+                // skipped — they have no stable literal form.
+                case TextPropertyData txt:
+                {
+                    string EscTxt(string val) => (val ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"");
+                    if (txt.HistoryType == TextHistoryType.Base)
+                    {
+                        return $"NSLOCTEXT(\"{EscTxt(txt.Namespace?.Value)}\", \"{EscTxt(txt.Value?.Value)}\", \"{EscTxt(txt.CultureInvariantString?.Value)}\")";
+                    }
+                    if (txt.HistoryType == TextHistoryType.None && txt.CultureInvariantString?.Value != null)
+                    {
+                        return $"INVTEXT(\"{EscTxt(txt.CultureInvariantString.Value)}\")";
+                    }
+                    return null;
+                }
                 case ObjectPropertyData o: return SerializeObjectRef(asset, o.Value);
                 case StructPropertyData st:
                 {
