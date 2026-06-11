@@ -370,8 +370,13 @@ namespace AssetParser.Commands
         // of those) are emitted.
         private static string FmtD(double x) => x.ToString("R", CultureInfo.InvariantCulture);
         private static string FmtF(float x) => x.ToString("R", CultureInfo.InvariantCulture);
+        // Quote + escape a string for use inside a container/struct ImportText literal (where bare
+        // strings with spaces/commas/parens would mis-parse). Top-level string properties stay bare.
+        private static string QuoteStr(string s) => "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
 
-        private static string? SerializePropertyValue(UAsset asset, PropertyData prop)
+        // nested=true when serializing an element/member inside an array/map/struct: string and name
+        // leaves are then quoted so the value reparses unambiguously.
+        private static string? SerializePropertyValue(UAsset asset, PropertyData prop, bool nested = false)
         {
             switch (prop)
             {
@@ -402,8 +407,8 @@ namespace AssetParser.Commands
                 case Int16PropertyData i16: return i16.Value.ToString(CultureInfo.InvariantCulture);
                 case FloatPropertyData f: return f.Value.ToString("R", CultureInfo.InvariantCulture);
                 case DoublePropertyData d: return d.Value.ToString("R", CultureInfo.InvariantCulture);
-                case StrPropertyData s: return s.Value?.ToString() ?? "";
-                case NamePropertyData n: return n.Value?.ToString() ?? "";
+                case StrPropertyData s: return nested ? QuoteStr(s.Value?.ToString()) : (s.Value?.ToString() ?? "");
+                case NamePropertyData n: return nested ? QuoteStr(n.Value?.ToString()) : (n.Value?.ToString() ?? "");
                 // FText (TextBlock.Text, Button labels, ...): the most common widget property. A Base
                 // history round-trips as NSLOCTEXT(namespace, key, source); a culture-invariant literal as
                 // INVTEXT. ImportText_Direct reparses both. Format histories (runtime-built text) are
@@ -422,22 +427,59 @@ namespace AssetParser.Commands
                     return null;
                 }
                 case ObjectPropertyData o: return SerializeObjectRef(asset, o.Value);
+                // SoftObject (asset path that may be unloaded): the engine ImportText form is the path
+                // string "/Game/Path/Pkg.Asset" (+ ":SubPath" when set).
+                case SoftObjectPropertyData soft:
+                {
+                    var pkg = soft.Value.AssetPath.PackageName?.ToString();
+                    var assetName = soft.Value.AssetPath.AssetName?.ToString();
+                    if (string.IsNullOrEmpty(pkg) || pkg == "None") return "";
+                    var path = string.IsNullOrEmpty(assetName) || assetName == "None" ? pkg : $"{pkg}.{assetName}";
+                    var sub = soft.Value.SubPathString?.Value;
+                    if (!string.IsNullOrEmpty(sub)) path += ":" + sub;
+                    return nested ? QuoteStr(path) : path;
+                }
                 case StructPropertyData st:
                 {
                     // Native math structs (Vector, Rotator, ...) come through as a StructPropertyData
                     // wrapping a single typed child with the SAME name — unwrap to the child's canonical
                     // form (e.g. "(X=2,Y=2,Z=2)") so ImportText_Direct reparses it onto the FVector.
                     if (st.Value.Count == 1 && st.Value[0].Name?.ToString() == st.Name?.ToString())
-                        return SerializePropertyValue(asset, st.Value[0]);
+                        return SerializePropertyValue(asset, st.Value[0], nested);
                     // User struct: (Field=Val,Field=Val,...)
                     var inner = new List<string>();
                     foreach (var ip in st.Value)
                     {
-                        var v = SerializePropertyValue(asset, ip);
+                        var v = SerializePropertyValue(asset, ip, true);
                         if (v == null) return null; // any unsupported member => whole struct unsupported
                         inner.Add($"{ip.Name}={v}");
                     }
                     return "(" + string.Join(",", inner) + ")";
+                }
+                // TArray / TSet: (Elem0,Elem1,...), each element in its own nested ImportText form.
+                case ArrayPropertyData arr:
+                {
+                    var items = new List<string>();
+                    foreach (var elem in arr.Value)
+                    {
+                        var v = SerializePropertyValue(asset, elem, true);
+                        if (v == null) return null; // unsupported element type => whole array unsupported
+                        items.Add(v);
+                    }
+                    return "(" + string.Join(",", items) + ")";
+                }
+                // TMap: ((Key0, Value0),(Key1, Value1),...) — the engine's map ImportText form.
+                case MapPropertyData map:
+                {
+                    var pairs = new List<string>();
+                    foreach (var kv in map.Value)
+                    {
+                        var k = SerializePropertyValue(asset, kv.Key, true);
+                        var v = SerializePropertyValue(asset, kv.Value, true);
+                        if (k == null || v == null) return null;
+                        pairs.Add($"({k}, {v})");
+                    }
+                    return "(" + string.Join(",", pairs) + ")";
                 }
                 default: return null;
             }
