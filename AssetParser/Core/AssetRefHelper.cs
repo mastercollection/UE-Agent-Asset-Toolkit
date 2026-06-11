@@ -165,6 +165,39 @@ public class GraphNodeData
     // node's archetype template object (in UBlueprint::ComponentTemplates), which live outside the
     // graph. Name -> ImportText-compatible value string. Null when none/not an AddComponent.
     public Dictionary<string, string>? Overrides { get; set; }
+    // Timeline data (Timeline node only): the UTimelineTemplate settings + tracks + embedded curve
+    // keyframes, all of which live outside the graph. Null for non-Timeline nodes.
+    public GraphTimelineData? Timeline { get; set; }
+}
+
+// One FRichCurveKey: time/value + tangents + interp/tangent modes.
+public class GraphTimelineKey
+{
+    public float T { get; set; }
+    public float V { get; set; }
+    public float At { get; set; }
+    public float Lt { get; set; }
+    public string? Interp { get; set; }
+    public string? Tangent { get; set; }
+}
+
+// One timeline track. Curves: float/event = 1, vector = 3, color = 4 component curves.
+public class GraphTimelineTrack
+{
+    public string Name { get; set; } = "";
+    public string Kind { get; set; } = ""; // float|vector|color|event
+    public List<List<GraphTimelineKey>> Curves { get; set; } = new();
+}
+
+public class GraphTimelineData
+{
+    public float Length { get; set; }
+    public bool Loop { get; set; }
+    public bool Autoplay { get; set; }
+    public bool Replicated { get; set; }
+    public bool IgnoreTimeDilation { get; set; }
+    public string LengthMode { get; set; } = "LastKeyFrame";
+    public List<GraphTimelineTrack> Tracks { get; set; } = new();
 }
 
 public class GraphFunctionData

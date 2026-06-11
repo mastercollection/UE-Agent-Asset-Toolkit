@@ -439,6 +439,47 @@ namespace AssetParser.Commands
             return path;
         }
 
+        // Strip an Unreal enum prefix ("RCIM_Cubic" -> "Cubic", "RCTM_Auto" -> "Auto").
+        private static string StripEnumPrefix(string s)
+        {
+            int us = s.IndexOf('_');
+            return (us >= 0 && us < s.Length - 1) ? s.Substring(us + 1) : s;
+        }
+
+        private static GraphTimelineKey ToTimelineKey(FRichCurveKey k) => new GraphTimelineKey
+        {
+            T = k.Time, V = k.Value, At = k.ArriveTangent, Lt = k.LeaveTangent,
+            Interp = StripEnumPrefix(k.InterpMode.ToString()),
+            Tangent = StripEnumPrefix(k.TangentMode.ToString()),
+        };
+
+        // Read all FRichCurves from a curve export. propName="FloatCurve" yields 1 (UCurveFloat); the
+        // static array "FloatCurves" yields N (UCurveVector=3, UCurveLinearColor=4) in serialized order.
+        private static List<List<GraphTimelineKey>> ReadCurves(NormalExport curve, string propName)
+        {
+            var result = new List<List<GraphTimelineKey>>();
+            if (curve.Data == null) return result;
+            foreach (var p in curve.Data)
+            {
+                if (p.Name?.ToString() != propName || p is not StructPropertyData rc) continue;
+                var keys = new List<GraphTimelineKey>();
+                var keysProp = rc.Value?.FirstOrDefault(x => x.Name?.ToString() == "Keys") as ArrayPropertyData;
+                if (keysProp?.Value != null)
+                {
+                    foreach (var k in keysProp.Value)
+                    {
+                        // Each key arrives as a StructPropertyData wrapping a single RichCurveKeyPropertyData
+                        // (native-struct representation), or directly as RichCurveKeyPropertyData.
+                        var rk = k as RichCurveKeyPropertyData
+                            ?? (k as StructPropertyData)?.Value?.FirstOrDefault() as RichCurveKeyPropertyData;
+                        if (rk != null) keys.Add(ToTimelineKey(rk.Value));
+                    }
+                }
+                result.Add(keys);
+            }
+            return result;
+        }
+
         public static GraphData BuildGraphData(UAsset asset)
         {
             var nameMap = asset.GetNameMapIndexList();
@@ -813,6 +854,59 @@ namespace AssetParser.Commands
                 return overrides.Count > 0 ? overrides : null;
             }
 
+            // Timeline (UK2Node_Timeline): the node names a member variable; its real data lives in a
+            // UTimelineTemplate (UBlueprint::Timelines, matched by VariableName) + embedded UCurve*
+            // objects — all outside the graph. Walk the template's 4 track arrays, resolve each track's
+            // curve export, and read its FRichCurve keyframes.
+            void AddTimelineTracks(GraphTimelineData tl, NormalExport tmpl, string arrayProp, string kind,
+                string curveRefProp, string curvePropName)
+            {
+                var arr = tmpl.Data?.FirstOrDefault(p => p.Name.ToString() == arrayProp) as ArrayPropertyData;
+                if (arr?.Value == null) return;
+                foreach (var elem in arr.Value)
+                {
+                    if (elem is not StructPropertyData track) continue;
+                    var name = track.Value?.FirstOrDefault(p => p.Name.ToString() == "TrackName")?.ToString() ?? "";
+                    var curveRef = track.Value?.FirstOrDefault(p => p.Name.ToString() == curveRefProp) as ObjectPropertyData;
+                    var t = new GraphTimelineTrack { Name = name, Kind = kind };
+                    if (curveRef?.Value != null && curveRef.Value.IsExport())
+                    {
+                        if (curveRef.Value.ToExport(asset) is NormalExport curveExport)
+                            t.Curves = ReadCurves(curveExport, curvePropName);
+                    }
+                    tl.Tracks.Add(t);
+                }
+            }
+
+            GraphTimelineData? ExtractTimeline(NormalExport node)
+            {
+                var varName = (node.Data?.FirstOrDefault(p => p.Name.ToString() == "TimelineName") as NamePropertyData)?.Value?.ToString();
+                if (string.IsNullOrEmpty(varName)) return null;
+                var tmpl = asset.Exports.OfType<NormalExport>().FirstOrDefault(e =>
+                    (e.GetExportClassType()?.ToString() ?? "") == "TimelineTemplate" &&
+                    (e.Data?.FirstOrDefault(p => p.Name.ToString() == "VariableName") as NamePropertyData)?.Value?.ToString() == varName);
+                if (tmpl == null) return null;
+
+                var tl = new GraphTimelineData();
+                tl.Length = (tmpl.Data?.FirstOrDefault(p => p.Name.ToString() == "TimelineLength") as FloatPropertyData)?.Value ?? 0f;
+                tl.Loop = (tmpl.Data?.FirstOrDefault(p => p.Name.ToString() == "bLoop") as BoolPropertyData)?.Value ?? false;
+                tl.Autoplay = (tmpl.Data?.FirstOrDefault(p => p.Name.ToString() == "bAutoPlay") as BoolPropertyData)?.Value ?? false;
+                tl.Replicated = (tmpl.Data?.FirstOrDefault(p => p.Name.ToString() == "bReplicated") as BoolPropertyData)?.Value ?? false;
+                tl.IgnoreTimeDilation = (tmpl.Data?.FirstOrDefault(p => p.Name.ToString() == "bIgnoreTimeDilation") as BoolPropertyData)?.Value ?? false;
+                // UTimelineTemplate's LengthMode CDO default is TL_TimelineLength(0); it's only
+                // serialized when non-default. Absent => the default TimelineLength. (Note: the
+                // materializer currently coerces requested LastKeyFrame to TimelineLength, so this
+                // round-trips deterministically as TimelineLength either way.)
+                var lm = tmpl.Data?.FirstOrDefault(p => p.Name.ToString() == "LengthMode") as BytePropertyData;
+                tl.LengthMode = (lm != null && lm.Value == 1) ? "LastKeyFrame" : "TimelineLength";
+
+                AddTimelineTracks(tl, tmpl, "FloatTracks", "float", "CurveFloat", "FloatCurve");
+                AddTimelineTracks(tl, tmpl, "VectorTracks", "vector", "CurveVector", "FloatCurves");
+                AddTimelineTracks(tl, tmpl, "LinearColorTracks", "color", "CurveLinearColor", "FloatCurves");
+                AddTimelineTracks(tl, tmpl, "EventTracks", "event", "CurveKeys", "FloatCurve");
+                return tl;
+            }
+
             // Asset name
             var bpExport = asset.Exports
                 .OfType<NormalExport>()
@@ -902,6 +996,8 @@ namespace AssetParser.Commands
 
                     var overrides = classType == "K2Node_AddComponent"
                         ? ExtractComponentOverrides(pins) : null;
+                    var timeline = classType == "K2Node_Timeline"
+                        ? ExtractTimeline(node) : null;
 
                     functionNodes.Add(new GraphNodeData
                     {
@@ -910,6 +1006,7 @@ namespace AssetParser.Commands
                         Target = target,
                         Pins = nodePinsList,
                         Overrides = overrides,
+                        Timeline = timeline,
                     });
                 }
 
