@@ -308,7 +308,10 @@ namespace AssetParser.Commands
                 r.ReadInt32();
         
                 lastField = "DefaultTextValue";
-                ReadFText(r);
+                {
+                    string textDefault = ReadFText(r);
+                    pin.TextDefault = string.IsNullOrEmpty(textDefault) ? null : textDefault;
+                }
         
                 // --- LinkedTo array ---
                 lastField = "LinkedTo.Count";
@@ -978,8 +981,9 @@ namespace AssetParser.Commands
                         if (pin.Name == "self" && pin.Direction == "in" && pin.LinkedTo.Count == 0)
                             continue;
 
-                        // Skip unconnected pins with no user-set default (just node shape declarations)
-                        if (pin.LinkedTo.Count == 0 && string.IsNullOrWhiteSpace(pin.DefaultValue))
+                        // Skip unconnected pins with no user-set default (just node shape declarations).
+                        // A PC_Text default (TextDefault) counts as a user-set default too.
+                        if (pin.LinkedTo.Count == 0 && string.IsNullOrWhiteSpace(pin.DefaultValue) && string.IsNullOrEmpty(pin.TextDefault))
                             continue;
 
                         var pinData = new GraphPinData
@@ -996,6 +1000,8 @@ namespace AssetParser.Commands
                         else if (pin.ContainerType == 3) pinData.Container = "map";
                         if (!string.IsNullOrEmpty(pin.DefaultValue))
                             pinData.Default = pin.DefaultValue;
+                        if (!string.IsNullOrEmpty(pin.TextDefault))
+                            pinData.TextDefault = pin.TextDefault;
 
                         // Resolve connections: follow through Knots, substitute inline refs
                         if (pin.LinkedTo.Count > 0)

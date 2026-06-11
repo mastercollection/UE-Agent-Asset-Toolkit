@@ -139,6 +139,7 @@ public struct ParsedPin
     public byte ContainerType;
     public string DefaultValue;
     public string AutoDefault;
+    public string? TextDefault;
     public bool IsHidden;
     public bool IsOrphaned;
     public List<(int nodeExportIndex, Guid pinGuid)> LinkedTo;
@@ -152,6 +153,9 @@ public class GraphPinData
     public string? Sub { get; set; }
     public string? Container { get; set; }
     public string? Default { get; set; }
+    // Source string of a PC_Text pin's DefaultTextValue (FText), separate from Default (the FString
+    // DefaultValue). Carries e.g. FormatText's "Hello {Name}" format literal. Null when absent.
+    public string? TextDefault { get; set; }
     public List<string>? To { get; set; }
 }
 
