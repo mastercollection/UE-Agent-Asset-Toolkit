@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.Json;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -354,6 +355,90 @@ namespace AssetParser.Commands
             return pin;
         }
         
+        // Serialize one template-archetype property delta to an ImportText-compatible string, for
+        // round-tripping AddComponent component-template overrides (which live outside the graph in
+        // UBlueprint::ComponentTemplates). Returns null for unsupported types — a skipped property is
+        // invisible to both sides of the diff, so a dropped type can never fake a false match (it can
+        // only surface as a loud diff!=0, never a silent loss). Conservative on purpose: only types
+        // with a clean serialize/ImportText fixpoint (scalars, string/name, enum, object ref, struct
+        // of those) are emitted.
+        private static string FmtD(double x) => x.ToString("R", CultureInfo.InvariantCulture);
+        private static string FmtF(float x) => x.ToString("R", CultureInfo.InvariantCulture);
+
+        private static string? SerializePropertyValue(UAsset asset, PropertyData prop)
+        {
+            switch (prop)
+            {
+                case BoolPropertyData b: return ((bool)b.Value) ? "true" : "false";
+                // Native math structs (FVector etc.) serialize as raw bytes, so UAssetAPI exposes them
+                // as dedicated typed properties — not a StructPropertyData inner list. Emit each in the
+                // engine's canonical ImportText form so ImportText_Direct reparses it.
+                case VectorPropertyData v:
+                    return $"(X={FmtD(v.Value.X)},Y={FmtD(v.Value.Y)},Z={FmtD(v.Value.Z)})";
+                case RotatorPropertyData r:
+                    return $"(Pitch={FmtD(r.Value.Pitch)},Yaw={FmtD(r.Value.Yaw)},Roll={FmtD(r.Value.Roll)})";
+                case Vector2DPropertyData v2:
+                    return $"(X={FmtD(v2.Value.X)},Y={FmtD(v2.Value.Y)})";
+                case Vector4PropertyData v4:
+                    return $"(X={FmtD(v4.Value.X)},Y={FmtD(v4.Value.Y)},Z={FmtD(v4.Value.Z)},W={FmtD(v4.Value.W)})";
+                case QuatPropertyData q:
+                    return $"(X={FmtD(q.Value.X)},Y={FmtD(q.Value.Y)},Z={FmtD(q.Value.Z)},W={FmtD(q.Value.W)})";
+                case LinearColorPropertyData lc:
+                    return $"(R={FmtF(lc.Value.R)},G={FmtF(lc.Value.G)},B={FmtF(lc.Value.B)},A={FmtF(lc.Value.A)})";
+                case BytePropertyData by:
+                    return (by.EnumValue != null && by.EnumValue.ToString() != "None")
+                        ? by.EnumValue.ToString()
+                        : by.Value.ToString(CultureInfo.InvariantCulture);
+                case EnumPropertyData e: return e.Value?.ToString();
+                case IntPropertyData i: return i.Value.ToString(CultureInfo.InvariantCulture);
+                case Int64PropertyData i64: return i64.Value.ToString(CultureInfo.InvariantCulture);
+                case Int8PropertyData i8: return i8.Value.ToString(CultureInfo.InvariantCulture);
+                case Int16PropertyData i16: return i16.Value.ToString(CultureInfo.InvariantCulture);
+                case FloatPropertyData f: return f.Value.ToString("R", CultureInfo.InvariantCulture);
+                case DoublePropertyData d: return d.Value.ToString("R", CultureInfo.InvariantCulture);
+                case StrPropertyData s: return s.Value?.ToString() ?? "";
+                case NamePropertyData n: return n.Value?.ToString() ?? "";
+                case ObjectPropertyData o: return SerializeObjectRef(asset, o.Value);
+                case StructPropertyData st:
+                {
+                    // Native math structs (Vector, Rotator, ...) come through as a StructPropertyData
+                    // wrapping a single typed child with the SAME name — unwrap to the child's canonical
+                    // form (e.g. "(X=2,Y=2,Z=2)") so ImportText_Direct reparses it onto the FVector.
+                    if (st.Value.Count == 1 && st.Value[0].Name?.ToString() == st.Name?.ToString())
+                        return SerializePropertyValue(asset, st.Value[0]);
+                    // User struct: (Field=Val,Field=Val,...)
+                    var inner = new List<string>();
+                    foreach (var ip in st.Value)
+                    {
+                        var v = SerializePropertyValue(asset, ip);
+                        if (v == null) return null; // any unsupported member => whole struct unsupported
+                        inner.Add($"{ip.Name}={v}");
+                    }
+                    return "(" + string.Join(",", inner) + ")";
+                }
+                default: return null;
+            }
+        }
+
+        // Resolve an ObjectProperty value to a full object path the engine's ImportText can load
+        // ("/Game/Path/Asset.Asset" for assets, "/Script/Module.Class" for class refs).
+        private static string? SerializeObjectRef(UAsset asset, FPackageIndex idx)
+        {
+            if (idx == null || idx.Index == 0) return null;
+            var path = ResolveObjectRef(idx)?.ToString();
+            if (string.IsNullOrEmpty(path)) return null;
+            // Class-ref tuple "(, /Script/Mod.Class, )" -> inner path
+            if (path.StartsWith("(,") && path.EndsWith(", )"))
+                return path.Substring(2, path.Length - 5).Trim();
+            string objName = idx.IsImport()
+                ? (idx.ToImport(asset)?.ObjectName.ToString() ?? "")
+                : ResolvePackageIndex(asset, idx);
+            // Bare package path -> full object path "/Game/X/Asset.Asset"
+            if (path.StartsWith("/") && !path.Contains(".") && !string.IsNullOrEmpty(objName))
+                return $"{path}.{objName}";
+            return path;
+        }
+
         public static GraphData BuildGraphData(UAsset asset)
         {
             var nameMap = asset.GetNameMapIndexList();
@@ -705,6 +790,29 @@ namespace AssetParser.Commands
                 return results;
             }
 
+            // AddComponent's component-template overrides: the hidden TemplateName pin names the
+            // archetype template object in the package (UBlueprint::ComponentTemplates); read its
+            // serialized (= non-default) properties as the override set. These live outside the graph,
+            // so without this the spawned component's mesh/material/etc. configuration is lost.
+            Dictionary<string, string>? ExtractComponentOverrides(List<ParsedPin> compPins)
+            {
+                var tnPin = compPins.FirstOrDefault(p => p.Name == "TemplateName");
+                var templateName = tnPin.DefaultValue;
+                if (string.IsNullOrEmpty(templateName)) return null;
+                var tmpl = asset.Exports.OfType<NormalExport>()
+                    .FirstOrDefault(e => e.ObjectName.ToString() == templateName);
+                if (tmpl?.Data == null) return null;
+                var overrides = new Dictionary<string, string>();
+                foreach (var p in tmpl.Data)
+                {
+                    var pname = p.Name?.ToString();
+                    if (string.IsNullOrEmpty(pname)) continue;
+                    var v = SerializePropertyValue(asset, p);
+                    if (v != null) overrides[pname] = v;
+                }
+                return overrides.Count > 0 ? overrides : null;
+            }
+
             // Asset name
             var bpExport = asset.Exports
                 .OfType<NormalExport>()
@@ -792,12 +900,16 @@ namespace AssetParser.Commands
                         nodePinsList.Add(pinData);
                     }
 
+                    var overrides = classType == "K2Node_AddComponent"
+                        ? ExtractComponentOverrides(pins) : null;
+
                     functionNodes.Add(new GraphNodeData
                     {
                         Id = nodeIdx,
                         Type = shortType,
                         Target = target,
                         Pins = nodePinsList,
+                        Overrides = overrides,
                     });
                 }
 

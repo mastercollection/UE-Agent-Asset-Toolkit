@@ -161,6 +161,10 @@ public class GraphNodeData
     public string Type { get; set; } = "";
     public string? Target { get; set; }
     public List<GraphPinData> Pins { get; set; } = new();
+    // Component-template property overrides (AddComponent only): the non-default properties on the
+    // node's archetype template object (in UBlueprint::ComponentTemplates), which live outside the
+    // graph. Name -> ImportText-compatible value string. Null when none/not an AddComponent.
+    public Dictionary<string, string>? Overrides { get; set; }
 }
 
 public class GraphFunctionData
