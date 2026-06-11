@@ -565,7 +565,8 @@ namespace AssetParser.Commands
                     return null;
                 }
 
-                if (nodeType == "K2Node_LatentAbilityCall")
+                // K2Node_LatentGameplayTaskCall is the (non-ability) base — same ProxyFactory* identity.
+                if (nodeType == "K2Node_LatentAbilityCall" || nodeType == "K2Node_LatentGameplayTaskCall")
                 {
                     var fn = node.Data?.FirstOrDefault(p => p.Name.ToString() == "ProxyFactoryFunctionName")?.ToString();
                     var fc = node.Data?.FirstOrDefault(p => p.Name.ToString() == "ProxyFactoryClass") as ObjectPropertyData;
