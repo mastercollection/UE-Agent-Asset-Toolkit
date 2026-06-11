@@ -305,7 +305,10 @@ namespace AssetParser.Commands
                 pin.AutoDefault = ReadFString(r);
         
                 lastField = "DefaultObject";
-                r.ReadInt32();
+                int defObjIdx = r.ReadInt32();
+                pin.DefaultObjectRef = defObjIdx != 0
+                    ? ResolvePackageIndex(asset, new FPackageIndex(defObjIdx))
+                    : null;
         
                 lastField = "DefaultTextValue";
                 {
@@ -968,6 +971,15 @@ namespace AssetParser.Commands
                     var classType = node.GetExportClassType()?.ToString() ?? "";
                     var shortType = classType.StartsWith("K2Node_") ? classType.Substring(7) : classType;
                     var target = ResolveNodeTarget(node, classType);
+
+                    // GetClassDefaults reads a class's CDO; the class lives on the "Class" input pin's
+                    // DefaultObject (a literal class ref, not a node property), so recover it from there.
+                    if (classType == "K2Node_GetClassDefaults" && string.IsNullOrEmpty(target))
+                    {
+                        var classPin = pins.FirstOrDefault(p => p.Name == "Class" && p.Direction == "in");
+                        if (!string.IsNullOrEmpty(classPin.DefaultObjectRef))
+                            target = classPin.DefaultObjectRef;
+                    }
 
                     // Early-exit: skip nodes with zero connections and no meaningful pins
                     bool hasAnyConnection = pins.Any(p => p.LinkedTo.Count > 0);

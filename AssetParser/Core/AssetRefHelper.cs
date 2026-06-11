@@ -140,6 +140,7 @@ public struct ParsedPin
     public string DefaultValue;
     public string AutoDefault;
     public string? TextDefault;
+    public string? DefaultObjectRef;
     public bool IsHidden;
     public bool IsOrphaned;
     public List<(int nodeExportIndex, Guid pinGuid)> LinkedTo;
