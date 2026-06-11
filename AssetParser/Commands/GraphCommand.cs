@@ -369,7 +369,8 @@ namespace AssetParser.Commands
                 ["K2Node_CustomEvent"] = new[] { "CustomFunctionName" },
                 ["K2Node_MacroInstance"] = new[] { "MacroGraphReference" },
                 ["K2Node_Event"] = new[] { "EventReference" },
-                ["K2Node_ComponentBoundEvent"] = new[] { "DelegatePropertyName" },
+                // K2Node_ComponentBoundEvent has a dedicated branch in ResolveNodeTarget (emits the
+                // Comp|Delegate|OwnerClass|ComponentClass tuple incl. an SCS class lookup).
                 ["K2Node_CallDelegate"] = new[] { "DelegateReference" },
                 ["K2Node_CreateDelegate"] = new[] { "SelectedFunctionName" },
                 // Operators: PromotableOperator stores the operation as an FName ("Add",
@@ -452,6 +453,43 @@ namespace AssetParser.Commands
                         }
                     }
                     return null;
+                }
+
+                // ComponentBoundEvent (red event node bound to a component's multicast delegate, e.g. a
+                // Box's OnComponentBeginOverlap). Its identity is three node fields — ComponentPropertyName
+                // (the SCS component variable), DelegatePropertyName, and DelegateOwnerClass (where the
+                // delegate is declared) — none recoverable from pins. We ALSO read the actual component
+                // class back from the asset's SCS (the node only knows the delegate's owner, not the
+                // concrete component the user attached), so re-materialization recreates the faithful
+                // class. Emit a pipe-joined tuple: "<Comp>|<Delegate>|<OwnerClass>|<ComponentClass>".
+                if (nodeType == "K2Node_ComponentBoundEvent")
+                {
+                    var compName = node.Data?.FirstOrDefault(p => p.Name.ToString() == "ComponentPropertyName")?.ToString();
+                    var delName = node.Data?.FirstOrDefault(p => p.Name.ToString() == "DelegatePropertyName")?.ToString();
+                    if (string.IsNullOrEmpty(compName) || compName == "None"
+                        || string.IsNullOrEmpty(delName) || delName == "None")
+                    {
+                        return null;
+                    }
+                    var ownerObj = node.Data?.FirstOrDefault(p => p.Name.ToString() == "DelegateOwnerClass") as ObjectPropertyData;
+                    var ownerClass = (ownerObj?.Value != null && ownerObj.Value.Index != 0)
+                        ? ResolvePackageIndex(asset, ownerObj.Value) : "";
+
+                    // Look up the SCS_Node whose InternalVariableName matches the bound component, and
+                    // read its ComponentClass — the concrete class to recreate on re-materialization.
+                    string compClass = "";
+                    for (int ei = 0; ei < asset.Exports.Count; ei++)
+                    {
+                        if (!(asset.Exports[ei] is NormalExport scs)) continue;
+                        if ((scs.GetExportClassType()?.ToString() ?? "") != "SCS_Node") continue;
+                        var ivn = scs.Data?.FirstOrDefault(p => p.Name.ToString() == "InternalVariableName")?.ToString();
+                        if (ivn != compName) continue;
+                        var ccObj = scs.Data?.FirstOrDefault(p => p.Name.ToString() == "ComponentClass") as ObjectPropertyData;
+                        if (ccObj?.Value != null && ccObj.Value.Index != 0)
+                            compClass = ResolvePackageIndex(asset, ccObj.Value);
+                        break;
+                    }
+                    return $"{compName}|{delName}|{ownerClass}|{compClass}";
                 }
 
                 if (!nodeTargetProps.TryGetValue(nodeType, out var propNames)) return null;
