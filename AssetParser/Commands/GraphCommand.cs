@@ -548,6 +548,18 @@ namespace AssetParser.Commands
                 // identity is the factory function — ProxyFactoryFunctionName (e.g. "WaitDelay") on
                 // ProxyFactoryClass (e.g. AbilityTask_WaitDelay). Emit "<FactoryClass>:<Function>"
                 // (mirrors the Message/MacroInstance form) so the node can be re-spawned.
+                // EnhancedInputAction (input-action event node): identity is the referenced UInputAction
+                // asset. Emit its full object path so the materializer's LoadObject can reload it.
+                if (nodeType == "K2Node_EnhancedInputAction")
+                {
+                    var ia = node.Data?.FirstOrDefault(p => p.Name.ToString() == "InputAction") as ObjectPropertyData;
+                    if (ia?.Value != null && ia.Value.Index != 0)
+                    {
+                        return SerializeObjectRef(asset, ia.Value);
+                    }
+                    return null;
+                }
+
                 if (nodeType == "K2Node_LatentAbilityCall")
                 {
                     var fn = node.Data?.FirstOrDefault(p => p.Name.ToString() == "ProxyFactoryFunctionName")?.ToString();
