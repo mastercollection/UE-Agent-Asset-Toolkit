@@ -544,6 +544,22 @@ namespace AssetParser.Commands
                     }
                 }
 
+                // LatentAbilityCall (GAS ability-task async node): a UK2Node_BaseAsyncTask whose
+                // identity is the factory function — ProxyFactoryFunctionName (e.g. "WaitDelay") on
+                // ProxyFactoryClass (e.g. AbilityTask_WaitDelay). Emit "<FactoryClass>:<Function>"
+                // (mirrors the Message/MacroInstance form) so the node can be re-spawned.
+                if (nodeType == "K2Node_LatentAbilityCall")
+                {
+                    var fn = node.Data?.FirstOrDefault(p => p.Name.ToString() == "ProxyFactoryFunctionName")?.ToString();
+                    var fc = node.Data?.FirstOrDefault(p => p.Name.ToString() == "ProxyFactoryClass") as ObjectPropertyData;
+                    var cls = (fc?.Value != null && fc.Value.Index != 0) ? ResolvePackageIndex(asset, fc.Value) : null;
+                    if (!string.IsNullOrEmpty(fn) && fn != "None" && !string.IsNullOrEmpty(cls))
+                    {
+                        return $"{cls}:{fn}";
+                    }
+                    return null;
+                }
+
                 if (nodeType == "K2Node_Message")
                 {
                     var fref = node.Data?.FirstOrDefault(p => p.Name.ToString() == "FunctionReference") as StructPropertyData;
