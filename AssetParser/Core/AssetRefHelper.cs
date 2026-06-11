@@ -211,6 +211,18 @@ public class GraphFunctionData
     public List<GraphNodeData> Nodes { get; set; } = new();
 }
 
+// One widget in a Widget Blueprint's WidgetTree hierarchy (the UMG analogue of an SCS component).
+public class GraphWidgetData
+{
+    public string Name { get; set; } = "";
+    public string Class { get; set; } = "";
+    public bool IsVariable { get; set; }
+    public string? SlotClass { get; set; }                       // the slot class in the parent panel
+    public Dictionary<string, string>? Properties { get; set; }      // non-default widget property deltas
+    public Dictionary<string, string>? SlotProperties { get; set; }  // non-default slot property deltas
+    public List<GraphWidgetData>? Children { get; set; }
+}
+
 public class GraphData
 {
     public string Name { get; set; } = "";
@@ -218,6 +230,8 @@ public class GraphData
     // (GAS abilities, etc.) round-trip. Null when unresolved.
     public string? ParentClass { get; set; }
     public List<GraphFunctionData> Functions { get; set; } = new();
+    // Widget Blueprint visual hierarchy (root widget); null for non-widget blueprints.
+    public GraphWidgetData? WidgetTree { get; set; }
     public List<object>? Errors { get; set; }
 }
 

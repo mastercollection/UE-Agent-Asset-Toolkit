@@ -1077,11 +1077,70 @@ namespace AssetParser.Commands
                 }
             }
 
+            // Widget Blueprint visual hierarchy. The UWidgetBlueprint export's WidgetTree -> RootWidget is
+            // the template root; recurse through each panel's Slots (slot.Content = child widget). Property
+            // deltas reuse SerializePropertyValue; structural/editor-only fields are filtered out.
+            GraphWidgetData widgetTree = null;
+            {
+                NormalExport ExportAt(FPackageIndex idx) =>
+                    (idx != null && idx.Index > 0 && idx.Index <= asset.Exports.Count)
+                        ? asset.Exports[idx.Index - 1] as NormalExport : null;
+                PropertyData NamedProp(NormalExport e, string name) =>
+                    e?.Data?.FirstOrDefault(p => p.Name?.ToString() == name);
+                var skipWidgetProps = new HashSet<string> { "Slot", "Slots", "Content", "Parent", "bIsVariable", "bExpandedInDesigner", "DisplayLabel", "WidgetTree", "RootWidget" };
+                var skipSlotProps = new HashSet<string> { "Content", "Parent" };
+                Dictionary<string, string> PropDeltas(NormalExport e, HashSet<string> skip)
+                {
+                    var d = new Dictionary<string, string>();
+                    foreach (var p in e.Data ?? new List<PropertyData>())
+                    {
+                        var pn = p.Name?.ToString() ?? "";
+                        if (skip.Contains(pn)) continue;
+                        var v = SerializePropertyValue(asset, p);
+                        if (v != null) d[pn] = v;
+                    }
+                    return d.Count > 0 ? d : null;
+                }
+                GraphWidgetData BuildWidget(NormalExport widgetExp, NormalExport slotExp)
+                {
+                    var w = new GraphWidgetData
+                    {
+                        Name = widgetExp.ObjectName.ToString(),
+                        Class = widgetExp.GetExportClassType()?.ToString() ?? "",
+                        IsVariable = (NamedProp(widgetExp, "bIsVariable") as BoolPropertyData)?.Value ?? false,
+                        Properties = PropDeltas(widgetExp, skipWidgetProps),
+                    };
+                    if (slotExp != null)
+                    {
+                        w.SlotClass = slotExp.GetExportClassType()?.ToString();
+                        w.SlotProperties = PropDeltas(slotExp, skipSlotProps);
+                    }
+                    if (NamedProp(widgetExp, "Slots") is ArrayPropertyData slotsArr)
+                    {
+                        var children = new List<GraphWidgetData>();
+                        foreach (var slotRef in slotsArr.Value.OfType<ObjectPropertyData>())
+                        {
+                            var childSlotExp = ExportAt(slotRef.Value);
+                            var contentExp = ExportAt((NamedProp(childSlotExp, "Content") as ObjectPropertyData)?.Value);
+                            if (contentExp != null) children.Add(BuildWidget(contentExp, childSlotExp));
+                        }
+                        if (children.Count > 0) w.Children = children;
+                    }
+                    return w;
+                }
+                var wbpExport = asset.Exports.OfType<NormalExport>()
+                    .FirstOrDefault(e => e.GetExportClassType()?.ToString() == "WidgetBlueprint");
+                var wtExp = ExportAt((NamedProp(wbpExport, "WidgetTree") as ObjectPropertyData)?.Value);
+                var rootExp = ExportAt((NamedProp(wtExp, "RootWidget") as ObjectPropertyData)?.Value);
+                if (rootExp != null) widgetTree = BuildWidget(rootExp, null);
+            }
+
             return new GraphData
             {
                 Name = bpName,
                 ParentClass = parentClass,
                 Functions = functions,
+                WidgetTree = widgetTree,
                 Errors = parseErrors.Count > 0 ? parseErrors : null,
             };
         }
