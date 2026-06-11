@@ -209,6 +209,9 @@ public class GraphFunctionData
 public class GraphData
 {
     public string Name { get; set; } = "";
+    // BP parent class path (e.g. "/Script/GameplayAbilities.GameplayAbility"); lets a non-Actor base
+    // (GAS abilities, etc.) round-trip. Null when unresolved.
+    public string? ParentClass { get; set; }
     public List<GraphFunctionData> Functions { get; set; } = new();
     public List<object>? Errors { get; set; }
 }

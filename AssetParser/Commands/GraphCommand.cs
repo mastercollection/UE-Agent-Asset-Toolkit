@@ -914,6 +914,11 @@ namespace AssetParser.Commands
             var bpName = bpExport?.ObjectName.ToString()
                 ?? Path.GetFileNameWithoutExtension(ProgramContext.assetPath);
 
+            // BP parent class (so a non-Actor base round-trips). Stored as an ObjectProperty on the
+            // Blueprint export; resolve to a full path the materializer's LoadClass can reload.
+            var parentProp = bpExport?.Data?.FirstOrDefault(p => p.Name.ToString() == "ParentClass") as ObjectPropertyData;
+            var parentClass = parentProp?.Value != null ? SerializeObjectRef(asset, parentProp.Value) : null;
+
             var functions = new List<GraphFunctionData>();
 
             foreach (var (graphName, nodeIndices) in graphNodeGroups)
@@ -1023,6 +1028,7 @@ namespace AssetParser.Commands
             return new GraphData
             {
                 Name = bpName,
+                ParentClass = parentClass,
                 Functions = functions,
                 Errors = parseErrors.Count > 0 ? parseErrors : null,
             };
