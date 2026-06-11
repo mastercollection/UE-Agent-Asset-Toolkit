@@ -500,6 +500,9 @@ namespace AssetParser.Commands
                 ["K2Node_DynamicCast"] = new[] { "TargetType" },
                 // ClassDynamicCast ("Cast To <Class> (class)") inherits TargetType from DynamicCast.
                 ["K2Node_ClassDynamicCast"] = new[] { "TargetType" },
+                // Composite (collapsed graph): identity is its BoundGraph (a UEdGraph export emitted as a
+                // separate function); the name links the node to that subgraph.
+                ["K2Node_Composite"] = new[] { "BoundGraph" },
                 ["K2Node_CustomEvent"] = new[] { "CustomFunctionName" },
                 ["K2Node_MacroInstance"] = new[] { "MacroGraphReference" },
                 ["K2Node_Event"] = new[] { "EventReference" },
