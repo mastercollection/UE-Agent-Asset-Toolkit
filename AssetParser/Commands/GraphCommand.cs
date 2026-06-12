@@ -952,12 +952,17 @@ namespace AssetParser.Commands
                 }
             }
 
-            // Resolve a pin GUID to its target, preferring the candidate in the referring node's own graph
-            // (duplicated graphs share pin GUIDs; without this a connection can resolve into the wrong graph).
-            (int exportIndex, string pinName)? ResolvePin(Guid guid, string srcGraph)
+            // Resolve a pin GUID to its target. Duplicated nodes reuse pin GUIDs (in the same graph AND
+            // across graphs), so a GUID can map to several candidates. The pin's LinkedTo also carries the
+            // target node's export index (preferNodeRef) — use it for an EXACT match first (disambiguates
+            // intra-graph duplicates a graph-scope check can't). Fall back to same-graph, then first.
+            (int exportIndex, string pinName)? ResolvePin(Guid guid, string srcGraph, int preferNodeRef)
             {
                 if (!pinGuidMap.TryGetValue(guid, out var cands) || cands.Count == 0) return null;
                 if (cands.Count == 1) return cands[0];
+                if (preferNodeRef > 0)
+                    foreach (var c in cands)
+                        if (c.exportIndex == preferNodeRef) return c;
                 foreach (var c in cands)
                     if (nodeToGraph.TryGetValue(c.exportIndex, out var g) && g == srcGraph) return c;
                 return cands[0];
@@ -985,7 +990,7 @@ namespace AssetParser.Commands
                 foreach (var (nextNodeRef, nextPinGuid) in otherPin.LinkedTo)
                 {
                     if (!visited.Add((nextNodeRef, nextPinGuid))) continue; // cycle
-                    var next = ResolvePin(nextPinGuid, srcGraph);
+                    var next = ResolvePin(nextPinGuid, srcGraph, nextNodeRef);
                     if (next != null)
                         results.AddRange(ResolveKnotTargets(next.Value.exportIndex, next.Value.pinName, srcGraph, visited));
                 }
@@ -1150,7 +1155,7 @@ namespace AssetParser.Commands
                             var targets = new List<string>();
                             foreach (var (linkedNodeRef, linkedPinGuid) in pin.LinkedTo)
                             {
-                                var resolved = ResolvePin(linkedPinGuid, graphName);
+                                var resolved = ResolvePin(linkedPinGuid, graphName, linkedNodeRef);
                                 if (resolved == null)
                                 {
                                     targets.Add($"{linkedNodeRef}:{linkedPinGuid}");
