@@ -143,6 +143,8 @@ public struct ParsedPin
     public string? DefaultObjectRef;
     public bool IsHidden;
     public bool IsOrphaned;
+    public bool IsReference;
+    public bool IsConst;
     public List<(int nodeExportIndex, Guid pinGuid)> LinkedTo;
     // Map value type (key type is Category/SubCategoryObject; this is the TMap value's terminal type).
     public string? ValueCategory;
@@ -163,6 +165,13 @@ public class GraphPinData
     // Source string of a PC_Text pin's DefaultTextValue (FText), separate from Default (the FString
     // DefaultValue). Carries e.g. FormatText's "Hello {Name}" format literal. Null when absent.
     public string? TextDefault { get; set; }
+    // Class/object-literal default (a pin's DefaultObject path, e.g. a DeterminesOutputType node's
+    // ComponentClass), separate from Default (the FString DefaultValue). Null when absent.
+    public string? DefaultObj { get; set; }
+    // Pass-by-(const-)reference flags. Only meaningful on signature params (a const-ref delegate-bound
+    // custom event param, a ref function arg); emitted only when true so the signature matches on rebuild.
+    public bool? Ref { get; set; }
+    public bool? Const { get; set; }
     public List<string>? To { get; set; }
 }
 
@@ -179,6 +188,8 @@ public class GraphNodeData
     // Timeline data (Timeline node only): the UTimelineTemplate settings + tracks + embedded curve
     // keyframes, all of which live outside the graph. Null for non-Timeline nodes.
     public GraphTimelineData? Timeline { get; set; }
+    // VariableGet impure variation ("ValidatedObject" | "Branch"); null when a plain pure get.
+    public string? Variation { get; set; }
 }
 
 // One FRichCurveKey: time/value + tangents + interp/tangent modes.
@@ -232,6 +243,22 @@ public class GraphWidgetData
     public List<GraphWidgetData>? Children { get; set; }
 }
 
+// One SimpleConstructionScript component node (the Actor analogue of a GraphWidgetData).
+// Hierarchy is normalized to a child-centric model: every node records its single parent.
+// A BP->BP child carries ParentName with ParentNative=false; a BP->inherited-native attach
+// (e.g. a mesh under the Character's native CharacterMesh0) carries ParentNative=true. A node
+// with no parent is an SCS root node.
+public class GraphComponentData
+{
+    public string Name { get; set; } = "";           // SCS_Node InternalVariableName
+    public string Class { get; set; } = "";           // ComponentClass path (native or /Game BP class)
+    public string? ParentName { get; set; }           // parent component variable name (null = root)
+    public bool ParentNative { get; set; }            // parent is an inherited native component
+    public string? AttachSocket { get; set; }          // AttachToName socket on the parent
+    public bool IsDefaultSceneRoot { get; set; }       // the SCS DefaultSceneRootNode
+    public Dictionary<string, string>? Properties { get; set; }  // ComponentTemplate prop deltas
+}
+
 public class GraphData
 {
     public string Name { get; set; } = "";
@@ -241,6 +268,8 @@ public class GraphData
     public List<GraphFunctionData> Functions { get; set; } = new();
     // Widget Blueprint visual hierarchy (root widget); null for non-widget blueprints.
     public GraphWidgetData? WidgetTree { get; set; }
+    // SimpleConstructionScript components (Actor/Pawn/Character blueprints); null for others.
+    public List<GraphComponentData>? Components { get; set; }
     public List<object>? Errors { get; set; }
 }
 

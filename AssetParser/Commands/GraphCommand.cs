@@ -278,16 +278,16 @@ namespace AssetParser.Commands
                 }
         
                 lastField = "PinType.bIsReference";
-                r.ReadUInt32();
-        
+                pin.IsReference = r.ReadUInt32() != 0;
+
                 lastField = "PinType.bIsWeakPointer";
                 r.ReadUInt32();
-        
+
                 lastField = "PinType.MemberRef";
                 ReadSimpleMemberRef(r, nameMap);
-        
+
                 lastField = "PinType.bIsConst";
-                r.ReadUInt32();
+                pin.IsConst = r.ReadUInt32() != 0;
         
                 lastField = "PinType.bIsUObjectWrapper";
                 r.ReadUInt32();
@@ -311,8 +311,10 @@ namespace AssetParser.Commands
         
                 lastField = "DefaultObject";
                 int defObjIdx = r.ReadInt32();
+                // Full object path ("/Game/.../Asset.Asset") so the materializer can LoadObject the literal
+                // default (a sound/class/etc.); a bare short name would fail to reload.
                 pin.DefaultObjectRef = defObjIdx != 0
-                    ? ResolvePackageIndex(asset, new FPackageIndex(defObjIdx))
+                    ? SerializeObjectRef(asset, new FPackageIndex(defObjIdx))
                     : null;
         
                 lastField = "DefaultTextValue";
@@ -464,8 +466,15 @@ namespace AssetParser.Commands
                     var inner = new List<string>();
                     foreach (var ip in st.Value)
                     {
+                        // A RawStructPropertyData member is a nested struct UAssetAPI couldn't parse (e.g. an
+                        // FInstancedPropertyBag with a dynamic/fixed layout). It has no ImportText form and is
+                        // typically auto-derived on rebuild (e.g. a camera-asset parameter bag rebuilt from the
+                        // referenced asset), so OMIT it — emitting the struct's parseable members (CameraAsset,
+                        // ...) round-trips, whereas collapsing the whole struct loses them too. Symmetric across
+                        // extraction, so the diff stays 0.
+                        if (ip.GetType().Name == "RawStructPropertyData") continue;
                         var v = SerializePropertyValue(asset, ip, true);
-                        if (v == null) return null; // any unsupported member => whole struct unsupported
+                        if (v == null) return null; // any other unsupported member => whole struct unsupported
                         inner.Add($"{ip.Name}={v}");
                     }
                     return "(" + string.Join(",", inner) + ")";
@@ -672,11 +681,11 @@ namespace AssetParser.Commands
                     }
                 }
 
-                // Multicast-delegate ops (AddDelegate/RemoveDelegate/ClearDelegate/AssignDelegate):
-                // the dispatcher is the DelegateReference. Emit just the member name for SELF-context
-                // dispatchers (MemberParent absent). External-class dispatchers (a component/widget
-                // event dispatcher) are left unresolved (null) — only the self-context case is
-                // materialized; the external case would need class encoding (follow-up).
+                // Multicast-delegate ops (AddDelegate/RemoveDelegate/ClearDelegate/AssignDelegate): the
+                // dispatcher is the DelegateReference. Emit the bare member name for a SELF-context
+                // dispatcher (MemberParent absent), or "<classpath>:<member>" for an external-class
+                // dispatcher (a component/widget event dispatcher) — same encoding as an external
+                // CallFunction/VariableGet; the materializer SetExternalMembers it and wires the self pin.
                 if (nodeType == "K2Node_AddDelegate" || nodeType == "K2Node_RemoveDelegate"
                     || nodeType == "K2Node_ClearDelegate" || nodeType == "K2Node_AssignDelegate")
                 {
@@ -685,10 +694,10 @@ namespace AssetParser.Commands
                     {
                         var mn = dref.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberName")?.ToString();
                         var mp = dref.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberParent") as ObjectPropertyData;
-                        var hasExternal = mp?.Value != null && mp.Value.Index != 0;
-                        if (!hasExternal && !string.IsNullOrEmpty(mn) && mn != "None")
+                        if (!string.IsNullOrEmpty(mn) && mn != "None")
                         {
-                            return mn;
+                            var cls = (mp?.Value != null && mp.Value.Index != 0) ? SerializeObjectRef(asset, mp.Value) : null;
+                            return string.IsNullOrEmpty(cls) ? mn : $"{cls}:{mn}";
                         }
                     }
                     return null;
@@ -750,8 +759,9 @@ namespace AssetParser.Commands
 
                 // K2Node_VariableGet emitted as a real node (only happens for an external member read —
                 // self reads are inlined). Encode "<class>:<member>" when the VariableReference carries an
-                // owning class so the materializer can set an external member reference.
-                if (nodeType == "K2Node_VariableGet")
+                // owning class so the materializer can set an external member reference. VariableSet uses
+                // the identical encoding (a set on a component/external object via its wired self pin).
+                if (nodeType == "K2Node_VariableGet" || nodeType == "K2Node_VariableSet")
                 {
                     var vref = node.Data?.FirstOrDefault(p => p.Name.ToString() == "VariableReference") as StructPropertyData;
                     var mn = vref?.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberName")?.ToString();
@@ -1141,9 +1151,20 @@ namespace AssetParser.Commands
                         if (pin.Name == "self" && pin.Direction == "in" && pin.LinkedTo.Count == 0)
                             continue;
 
+                        // On a signature-defining node (CustomEvent / FunctionEntry / FunctionResult) every
+                        // data pin IS a parameter of the function/event signature, so keep it even when
+                        // unconnected and default-less — dropping it would shorten the signature (e.g. a
+                        // delegate-bound custom event whose Tag param is unwired) and fail to compile.
+                        bool isSignatureNode = classType == "K2Node_CustomEvent"
+                            || classType == "K2Node_FunctionEntry" || classType == "K2Node_FunctionResult";
+                        bool isParamPin = pin.Category != "exec" && pin.Category != "delegate" && pin.Name != "self";
+
                         // Skip unconnected pins with no user-set default (just node shape declarations).
-                        // A PC_Text default (TextDefault) counts as a user-set default too.
-                        if (pin.LinkedTo.Count == 0 && string.IsNullOrWhiteSpace(pin.DefaultValue) && string.IsNullOrEmpty(pin.TextDefault))
+                        // A PC_Text default (TextDefault) or a class/object-literal default (DefaultObject,
+                        // e.g. a DeterminesOutputType ComponentClass pin) counts as a user-set default too.
+                        if (pin.LinkedTo.Count == 0 && string.IsNullOrWhiteSpace(pin.DefaultValue)
+                            && string.IsNullOrEmpty(pin.TextDefault) && string.IsNullOrEmpty(pin.DefaultObjectRef)
+                            && !(isSignatureNode && isParamPin))
                             continue;
 
                         var pinData = new GraphPinData
@@ -1167,6 +1188,12 @@ namespace AssetParser.Commands
                             pinData.Default = pin.DefaultValue;
                         if (!string.IsNullOrEmpty(pin.TextDefault))
                             pinData.TextDefault = pin.TextDefault;
+                        if (!string.IsNullOrEmpty(pin.DefaultObjectRef))
+                            pinData.DefaultObj = pin.DefaultObjectRef;
+                        // Reference/const flags on a signature param (e.g. a const-ref delegate-bound custom
+                        // event param) — needed so the rebuilt user-defined pin matches the bound signature.
+                        if (isSignatureNode && isParamPin && pin.IsReference) pinData.Ref = true;
+                        if (isSignatureNode && isParamPin && pin.IsConst) pinData.Const = true;
 
                         // Resolve connections: follow through Knots, substitute inline refs
                         if (pin.LinkedTo.Count > 0)
@@ -1204,6 +1231,21 @@ namespace AssetParser.Commands
                     var timeline = classType == "K2Node_Timeline"
                         ? ExtractTimeline(node) : null;
 
+                    // A VariableGet can be impure (a "validated get" with exec pins): CurrentVariation is
+                    // Pure | ValidatedObject | Branch. Capture the non-Pure variation so the materializer
+                    // reproduces the impure pin shape (a pure default would lack the exec pins).
+                    string variation = null;
+                    if (classType == "K2Node_VariableGet")
+                    {
+                        var cv = node.Data?.FirstOrDefault(p => p.Name.ToString() == "CurrentVariation");
+                        var cvStr = cv?.ToString();
+                        if (!string.IsNullOrEmpty(cvStr) && cvStr != "None")
+                        {
+                            var shortV = cvStr.Contains("::") ? cvStr.Substring(cvStr.LastIndexOf("::") + 2) : cvStr;
+                            if (shortV != "Pure") variation = shortV;
+                        }
+                    }
+
                     functionNodes.Add(new GraphNodeData
                     {
                         Id = nodeIdx,
@@ -1212,6 +1254,7 @@ namespace AssetParser.Commands
                         Pins = nodePinsList,
                         Overrides = overrides,
                         Timeline = timeline,
+                        Variation = variation,
                     });
                 }
 
@@ -1310,12 +1353,98 @@ namespace AssetParser.Commands
                 if (rootExp != null) widgetTree = BuildWidget(rootExp, null);
             }
 
+            // SimpleConstructionScript components (Actor/Pawn/Character blueprints). Each SCS_Node names a
+            // ComponentClass, an InternalVariableName, a ComponentTemplate (holding property deltas), and a
+            // parent: BP->native via ParentComponentOrVariableName(+bIsParentComponentNative), BP->BP via the
+            // parent node's ChildNodes. Normalize to a child-centric model so the materializer reconstructs it.
+            List<GraphComponentData> components = null;
+            {
+                NormalExport ExportAt2(FPackageIndex idx) =>
+                    (idx != null && idx.Index > 0 && idx.Index <= asset.Exports.Count)
+                        ? asset.Exports[idx.Index - 1] as NormalExport : null;
+                PropertyData NamedProp2(NormalExport e, string name) =>
+                    e?.Data?.FirstOrDefault(p => p.Name?.ToString() == name);
+
+                var scsNodes = asset.Exports.OfType<NormalExport>()
+                    .Where(e => (e.GetExportClassType()?.ToString() ?? "") == "SCS_Node").ToList();
+                if (scsNodes.Count > 0)
+                {
+                    // DefaultSceneRootNode of the SimpleConstructionScript export.
+                    var scsExp = asset.Exports.OfType<NormalExport>()
+                        .FirstOrDefault(e => (e.GetExportClassType()?.ToString() ?? "") == "SimpleConstructionScript");
+                    var defaultRootName = ((NamedProp2(scsExp, "DefaultSceneRootNode") as ObjectPropertyData)?.Value is FPackageIndex dri && dri.Index != 0)
+                        ? (ExportAt2(dri)?.ObjectName.ToString()) : null;
+
+                    string VarName(NormalExport n) =>
+                        (NamedProp2(n, "InternalVariableName") as NamePropertyData)?.Value.ToString()
+                        ?? n.ObjectName.ToString();
+
+                    // Map each child node's export-name -> its BP parent's variable name (via ChildNodes).
+                    var bpParentOf = new Dictionary<string, string>();
+                    foreach (var n in scsNodes)
+                    {
+                        if (NamedProp2(n, "ChildNodes") is ArrayPropertyData kids)
+                        {
+                            foreach (var childRef in kids.Value.OfType<ObjectPropertyData>())
+                            {
+                                var childExp = ExportAt2(childRef.Value);
+                                if (childExp != null)
+                                    bpParentOf[childExp.ObjectName.ToString()] = VarName(n);
+                            }
+                        }
+                    }
+
+                    var skipCompProps = new HashSet<string> { "AttachParent", "AttachChildren", "AttachSocketName", "bIsParentComponentNative" };
+                    Dictionary<string, string> CompPropDeltas(NormalExport tmpl)
+                    {
+                        if (tmpl == null) return null;
+                        var d = new Dictionary<string, string>();
+                        foreach (var p in tmpl.Data ?? new List<PropertyData>())
+                        {
+                            var pn = p.Name?.ToString() ?? "";
+                            if (skipCompProps.Contains(pn)) continue;
+                            var v = SerializePropertyValue(asset, p);
+                            d[pn] = v ?? $"<unserialized:{p.GetType().Name}>";
+                        }
+                        return d.Count > 0 ? d : null;
+                    }
+
+                    components = new List<GraphComponentData>();
+                    foreach (var n in scsNodes)
+                    {
+                        var name = VarName(n);
+                        var classPath = SerializeObjectRef(asset, (NamedProp2(n, "ComponentClass") as ObjectPropertyData)?.Value)
+                            ?? "/Script/Engine.SceneComponent";
+                        var nativeParent = (NamedProp2(n, "ParentComponentOrVariableName") as NamePropertyData)?.Value.ToString();
+                        var isNative = (NamedProp2(n, "bIsParentComponentNative") as BoolPropertyData)?.Value ?? false;
+                        var socket = (NamedProp2(n, "AttachToName") as NamePropertyData)?.Value.ToString();
+                        var tmpl = ExportAt2((NamedProp2(n, "ComponentTemplate") as ObjectPropertyData)?.Value);
+
+                        string parentName = (isNative && !string.IsNullOrEmpty(nativeParent))
+                            ? nativeParent
+                            : (bpParentOf.TryGetValue(n.ObjectName.ToString(), out var bp) ? bp : null);
+
+                        components.Add(new GraphComponentData
+                        {
+                            Name = name,
+                            Class = classPath,
+                            ParentName = parentName,
+                            ParentNative = isNative && !string.IsNullOrEmpty(nativeParent),
+                            AttachSocket = string.IsNullOrEmpty(socket) ? null : socket,
+                            IsDefaultSceneRoot = (name == defaultRootName) || (n.ObjectName.ToString() == defaultRootName),
+                            Properties = CompPropDeltas(tmpl),
+                        });
+                    }
+                }
+            }
+
             return new GraphData
             {
                 Name = bpName,
                 ParentClass = parentClass,
                 Functions = functions,
                 WidgetTree = widgetTree,
+                Components = components,
                 Errors = parseErrors.Count > 0 ? parseErrors : null,
             };
         }
