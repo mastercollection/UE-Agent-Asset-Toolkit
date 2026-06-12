@@ -431,7 +431,10 @@ namespace AssetParser.Commands
                     }
                     return null;
                 }
-                case ObjectPropertyData o: return SerializeObjectRef(asset, o.Value);
+                // A null object reference is "None" in ExportText (ImportText reads it back as null).
+                // Returning null here would collapse an enclosing struct/array (e.g. a TabInfo whose
+                // optional ActivateWidget/IconImage are unset) to <unserialized>.
+                case ObjectPropertyData o: return SerializeObjectRef(asset, o.Value) ?? "None";
                 // SoftObject (asset path that may be unloaded): the engine ImportText form is the path
                 // string "/Game/Path/Pkg.Asset" (+ ":SubPath" when set).
                 case SoftObjectPropertyData soft:
