@@ -395,6 +395,9 @@ namespace AssetParser.Commands
                     return $"(Pitch={FmtD(r.Value.Pitch)},Yaw={FmtD(r.Value.Yaw)},Roll={FmtD(r.Value.Roll)})";
                 case Vector2DPropertyData v2:
                     return $"(X={FmtD(v2.Value.X)},Y={FmtD(v2.Value.Y)})";
+                // FSlateBrush.ImageSize and similar Slate fields use the deprecated float Vector2 type.
+                case DeprecateSlateVector2DPropertyData dv2:
+                    return $"(X={FmtF(dv2.Value.X)},Y={FmtF(dv2.Value.Y)})";
                 case Vector4PropertyData v4:
                     return $"(X={FmtD(v4.Value.X)},Y={FmtD(v4.Value.Y)},Z={FmtD(v4.Value.Z)},W={FmtD(v4.Value.W)})";
                 case QuatPropertyData q:
@@ -425,9 +428,12 @@ namespace AssetParser.Commands
                     {
                         return $"NSLOCTEXT(\"{EscTxt(txt.Namespace?.Value)}\", \"{EscTxt(txt.Value?.Value)}\", \"{EscTxt(txt.CultureInvariantString?.Value)}\")";
                     }
-                    if (txt.HistoryType == TextHistoryType.None && txt.CultureInvariantString?.Value != null)
+                    if (txt.HistoryType == TextHistoryType.None)
                     {
-                        return $"INVTEXT(\"{EscTxt(txt.CultureInvariantString.Value)}\")";
+                        // Culture-invariant text, or an EMPTY FText (null CultureInvariantString) — emit
+                        // INVTEXT("") rather than null, which would collapse an enclosing struct/array
+                        // (e.g. a TabInfo whose ButtonText is empty).
+                        return $"INVTEXT(\"{EscTxt(txt.CultureInvariantString?.Value ?? "")}\")";
                     }
                     return null;
                 }
