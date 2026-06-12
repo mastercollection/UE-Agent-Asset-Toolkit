@@ -1236,7 +1236,10 @@ namespace AssetParser.Commands
                         var pn = p.Name?.ToString() ?? "";
                         if (skip.Contains(pn)) continue;
                         var v = SerializePropertyValue(asset, p);
-                        if (v != null) d[pn] = v;
+                        // Integrity: never DROP a serialized property. If we can't render its value
+                        // (complex nested struct/array not yet supported), emit a loud marker instead so
+                        // a clone that omits it surfaces as a real diff rather than matching silently.
+                        d[pn] = v ?? $"<unserialized:{p.GetType().Name}>";
                     }
                     return d.Count > 0 ? d : null;
                 }
