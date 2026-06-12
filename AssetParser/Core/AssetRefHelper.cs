@@ -226,6 +226,9 @@ public class GraphWidgetData
     public string? SlotClass { get; set; }                       // the slot class in the parent panel
     public Dictionary<string, string>? Properties { get; set; }      // non-default widget property deltas
     public Dictionary<string, string>? SlotProperties { get; set; }  // non-default slot property deltas
+    // Per-direction rules of the widget's UWidgetNavigation sub-object (Left/Right/Up/Down/Next/Previous
+    // -> serialized FWidgetNavigationData). The bare object reference carries no rules, so capture them.
+    public Dictionary<string, string>? Navigation { get; set; }
     public List<GraphWidgetData>? Children { get; set; }
 }
 

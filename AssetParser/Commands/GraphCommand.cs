@@ -1226,7 +1226,7 @@ namespace AssetParser.Commands
                         ? asset.Exports[idx.Index - 1] as NormalExport : null;
                 PropertyData NamedProp(NormalExport e, string name) =>
                     e?.Data?.FirstOrDefault(p => p.Name?.ToString() == name);
-                var skipWidgetProps = new HashSet<string> { "Slot", "Slots", "Content", "Parent", "bIsVariable", "bExpandedInDesigner", "DisplayLabel", "WidgetTree", "RootWidget" };
+                var skipWidgetProps = new HashSet<string> { "Slot", "Slots", "Content", "Parent", "bIsVariable", "bExpandedInDesigner", "DisplayLabel", "WidgetTree", "RootWidget", "Navigation" };
                 var skipSlotProps = new HashSet<string> { "Content", "Parent" };
                 Dictionary<string, string> PropDeltas(NormalExport e, HashSet<string> skip)
                 {
@@ -1259,6 +1259,24 @@ namespace AssetParser.Commands
                     {
                         w.SlotClass = slotExp.GetExportClassType()?.ToString();
                         w.SlotProperties = PropDeltas(slotExp, skipSlotProps);
+                    }
+                    // Navigation: an instanced UWidgetNavigation sub-object. Capture its per-direction
+                    // FWidgetNavigationData rules (the bare "Navigation=WidgetNavigation_0" reference, in
+                    // skipWidgetProps, carries no rules) so the materializer recreates them faithfully.
+                    var navExp = ExportAt((NamedProp(widgetExp, "Navigation") as ObjectPropertyData)?.Value);
+                    if (navExp != null)
+                    {
+                        var nav = new Dictionary<string, string>();
+                        foreach (var p in navExp.Data ?? new List<PropertyData>())
+                        {
+                            var v = SerializePropertyValue(asset, p);
+                            // Skip default-rule directions: FWidgetNavigationData.Rule defaults to Escape
+                            // (WidgetNavigation.h), so a bare "(Rule=...Escape)" is semantically "no rule".
+                            // The original may serialize it explicitly while a clone omits it (default not
+                            // written) — filtering keeps only meaningful rules so the IR round-trips.
+                            if (v != null && v != "(Rule=EUINavigationRule::Escape)") nav[p.Name.ToString()] = v;
+                        }
+                        if (nav.Count > 0) w.Navigation = nav;
                     }
                     if (NamedProp(widgetExp, "Slots") is ArrayPropertyData slotsArr)
                     {
