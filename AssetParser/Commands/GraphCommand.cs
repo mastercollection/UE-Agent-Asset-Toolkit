@@ -717,6 +717,36 @@ namespace AssetParser.Commands
                     return $"{compName}|{delName}|{ownerClass}|{compClass}";
                 }
 
+                // K2Node_CallFunction: a self/local call (bSelfContext, no MemberParent) emits a bare
+                // member name (the materializer resolves it on the blueprint's own skeleton / parent
+                // chain). An external or static call carries MemberParent (the owning class, e.g.
+                // DataRegistrySubsystem / ListView); encode "<class>:<member>" (mirrors the Message form)
+                // so the materializer can LoadClass it instead of guessing from a hardcoded library list.
+                if (nodeType == "K2Node_CallFunction")
+                {
+                    var fref = node.Data?.FirstOrDefault(p => p.Name.ToString() == "FunctionReference") as StructPropertyData;
+                    var mn = fref?.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberName")?.ToString();
+                    if (string.IsNullOrEmpty(mn) || mn == "None") return null;
+                    var mp = fref?.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberParent") as ObjectPropertyData;
+                    // Full object path ("/Script/UMG.ListViewBase", "/Game/.../WBP_X.WBP_X_C") so the
+                    // materializer's LoadObject reloads native and (unloaded) Blueprint-generated classes alike.
+                    var cls = (mp?.Value != null && mp.Value.Index != 0) ? SerializeObjectRef(asset, mp.Value) : null;
+                    return string.IsNullOrEmpty(cls) ? mn : $"{cls}:{mn}";
+                }
+
+                // K2Node_VariableGet emitted as a real node (only happens for an external member read —
+                // self reads are inlined). Encode "<class>:<member>" when the VariableReference carries an
+                // owning class so the materializer can set an external member reference.
+                if (nodeType == "K2Node_VariableGet")
+                {
+                    var vref = node.Data?.FirstOrDefault(p => p.Name.ToString() == "VariableReference") as StructPropertyData;
+                    var mn = vref?.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberName")?.ToString();
+                    if (string.IsNullOrEmpty(mn) || mn == "None") return null;
+                    var mp = vref?.Value?.FirstOrDefault(p => p.Name.ToString() == "MemberParent") as ObjectPropertyData;
+                    var cls = (mp?.Value != null && mp.Value.Index != 0) ? SerializeObjectRef(asset, mp.Value) : null;
+                    return string.IsNullOrEmpty(cls) ? mn : $"{cls}:{mn}";
+                }
+
                 if (!nodeTargetProps.TryGetValue(nodeType, out var propNames)) return null;
 
                 foreach (var propName in propNames)
@@ -785,8 +815,11 @@ namespace AssetParser.Commands
             var k2Nodes = new Dictionary<int, NormalExport>();
             // Map export index → EdGraph export
             var edGraphs = new Dictionary<int, string>();
-            // Map PinId GUID → (export index, pin name) for connection resolution
-            var pinGuidMap = new Dictionary<Guid, (int exportIndex, string pinName)>();
+            // Map PinId GUID → candidate (export index, pin name) list for connection resolution. A list
+            // (not a single entry) because duplicated function graphs reuse pin GUIDs across graphs — the
+            // collision is disambiguated at resolve time by preferring the candidate in the SAME graph as
+            // the referring node (see ResolvePin).
+            var pinGuidMap = new Dictionary<Guid, List<(int exportIndex, string pinName)>>();
 
             for (int i = 0; i < asset.Exports.Count; i++)
             {
@@ -810,6 +843,12 @@ namespace AssetParser.Commands
                     graphNodeGroups[graphName] = new List<int>();
                 graphNodeGroups[graphName].Add(idx);
             }
+
+            // Reverse map (export index → owning graph) for graph-scoped pin GUID disambiguation.
+            var nodeToGraph = new Dictionary<int, string>();
+            foreach (var (gname, indices) in graphNodeGroups)
+                foreach (var ni in indices)
+                    nodeToGraph[ni] = gname;
 
             // --- Parse pins for all K2Nodes ---
             // Stores parsed pin data per export index
@@ -843,8 +882,14 @@ namespace AssetParser.Commands
                     {
                         var pin = ReadOnePin(reader, asset, nameMap);
                         pins.Add(pin);
-                        // Register in GUID map for connection resolution
-                        pinGuidMap[pin.PinId] = (idx, pin.Name);
+                        // Register in GUID map for connection resolution (append — GUIDs may collide
+                        // across duplicated graphs; ResolvePin disambiguates by graph at lookup time).
+                        if (!pinGuidMap.TryGetValue(pin.PinId, out var guidList))
+                        {
+                            guidList = new List<(int, string)>();
+                            pinGuidMap[pin.PinId] = guidList;
+                        }
+                        guidList.Add((idx, pin.Name));
                     }
                     nodePins[idx] = pins;
                 }
@@ -891,7 +936,12 @@ namespace AssetParser.Commands
                     if (nodePins.TryGetValue(idx, out var vgPins))
                     {
                         var outPins = vgPins.Where(p => p.Direction == "out").ToList();
-                        if (outPins.Count <= 2)
+                        // Only inline a self-context read ("var:Name"). A VariableGet that reads a member
+                        // OFF an external object has a connected "self"/target input pin; inlining it would
+                        // drop that input connection (the inline form carries no self), so emit it as a real
+                        // node instead.
+                        bool hasConnectedInput = vgPins.Any(p => p.Direction == "in" && p.LinkedTo.Count > 0);
+                        if (outPins.Count <= 2 && !hasConnectedInput)
                         {
                             var varName = ResolveNodeTarget(node, classType) ?? "Unknown";
                             inlineNodeIds.Add(idx);
@@ -902,8 +952,19 @@ namespace AssetParser.Commands
                 }
             }
 
+            // Resolve a pin GUID to its target, preferring the candidate in the referring node's own graph
+            // (duplicated graphs share pin GUIDs; without this a connection can resolve into the wrong graph).
+            (int exportIndex, string pinName)? ResolvePin(Guid guid, string srcGraph)
+            {
+                if (!pinGuidMap.TryGetValue(guid, out var cands) || cands.Count == 0) return null;
+                if (cands.Count == 1) return cands[0];
+                foreach (var c in cands)
+                    if (nodeToGraph.TryGetValue(c.exportIndex, out var g) && g == srcGraph) return c;
+                return cands[0];
+            }
+
             // Resolve Knot pass-throughs: follow chains of Knots to all real targets (handles fan-out)
-            List<(int exportIndex, string pinName)> ResolveKnotTargets(int exportIdx, string pinName, HashSet<(int, Guid)>? visited = null)
+            List<(int exportIndex, string pinName)> ResolveKnotTargets(int exportIdx, string pinName, string srcGraph, HashSet<(int, Guid)>? visited = null)
             {
                 if (!knotNodeIds.Contains(exportIdx))
                     return new List<(int, string)> { (exportIdx, pinName) };
@@ -924,8 +985,9 @@ namespace AssetParser.Commands
                 foreach (var (nextNodeRef, nextPinGuid) in otherPin.LinkedTo)
                 {
                     if (!visited.Add((nextNodeRef, nextPinGuid))) continue; // cycle
-                    if (pinGuidMap.TryGetValue(nextPinGuid, out var next))
-                        results.AddRange(ResolveKnotTargets(next.exportIndex, next.pinName, visited));
+                    var next = ResolvePin(nextPinGuid, srcGraph);
+                    if (next != null)
+                        results.AddRange(ResolveKnotTargets(next.Value.exportIndex, next.Value.pinName, srcGraph, visited));
                 }
                 return results;
             }
@@ -1006,10 +1068,12 @@ namespace AssetParser.Commands
                 return tl;
             }
 
-            // Asset name
+            // Asset name. Match the blueprint asset export by a class name that ENDS WITH "Blueprint"
+            // (Blueprint / WidgetBlueprint / AnimBlueprint) — not merely Contains, which would wrongly
+            // grab MVVM extension exports like "MVVMBlueprintView" / "MVVMBlueprintViewSettings".
             var bpExport = asset.Exports
                 .OfType<NormalExport>()
-                .FirstOrDefault(e => e.GetExportClassType()?.ToString()?.Contains("Blueprint") == true);
+                .FirstOrDefault(e => e.GetExportClassType()?.ToString()?.EndsWith("Blueprint") == true);
             var bpName = bpExport?.ObjectName.ToString()
                 ?? Path.GetFileNameWithoutExtension(ProgramContext.assetPath);
 
@@ -1086,14 +1150,15 @@ namespace AssetParser.Commands
                             var targets = new List<string>();
                             foreach (var (linkedNodeRef, linkedPinGuid) in pin.LinkedTo)
                             {
-                                if (!pinGuidMap.TryGetValue(linkedPinGuid, out var resolved))
+                                var resolved = ResolvePin(linkedPinGuid, graphName);
+                                if (resolved == null)
                                 {
                                     targets.Add($"{linkedNodeRef}:{linkedPinGuid}");
                                     continue;
                                 }
 
                                 // Follow through Knot nodes to find all real targets (handles fan-out)
-                                var finals = ResolveKnotTargets(resolved.exportIndex, resolved.pinName);
+                                var finals = ResolveKnotTargets(resolved.Value.exportIndex, resolved.Value.pinName, graphName);
                                 foreach (var (finalIdx, finalPin) in finals)
                                 {
                                     // Substitute inline references for VariableGet/Self nodes
@@ -1165,8 +1230,14 @@ namespace AssetParser.Commands
                     var w = new GraphWidgetData
                     {
                         Name = widgetExp.ObjectName.ToString(),
-                        Class = widgetExp.GetExportClassType()?.ToString() ?? "",
-                        IsVariable = (NamedProp(widgetExp, "bIsVariable") as BoolPropertyData)?.Value ?? false,
+                        // Full class path ("/Script/UMG.CanvasPanel" or "/Game/.../WBP_X.WBP_X_C") so the
+                        // materializer can LoadObject unloaded Blueprint-generated widget classes.
+                        Class = SerializeObjectRef(asset, widgetExp.ClassIndex) ?? widgetExp.GetExportClassType()?.ToString() ?? "",
+                        // UWidget::bIsVariable defaults to TRUE (Widget.cpp), so an absent property means
+                        // the widget IS a variable. The compiler only serializes bIsVariable=false for
+                        // generated-name widgets it demotes. Defaulting to false here would wrongly drop
+                        // the variable flag from every named widget (and break ComponentBoundEvent binds).
+                        IsVariable = (NamedProp(widgetExp, "bIsVariable") as BoolPropertyData)?.Value ?? true,
                         Properties = PropDeltas(widgetExp, skipWidgetProps),
                     };
                     if (slotExp != null)
