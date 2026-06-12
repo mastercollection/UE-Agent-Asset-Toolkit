@@ -263,8 +263,11 @@ namespace AssetParser.Commands
         
                 lastField = "PinType.PinSubCategoryObject";
                 int subCatObj = r.ReadInt32();
+                // Full object path ("/Script/Engine.Actor", "/Game/.../AC_Mob.AC_Mob_C") so the
+                // materializer can LoadObject project-defined pin/variable types that are not yet
+                // loaded; a bare short name silently falls back to UObject and breaks type-checks.
                 pin.SubCategoryObject = subCatObj != 0
-                    ? ResolvePackageIndex(asset, new FPackageIndex(subCatObj))
+                    ? SerializeObjectRef(asset, new FPackageIndex(subCatObj))
                     : "";
         
                 lastField = "PinType.ContainerType";
@@ -274,7 +277,7 @@ namespace AssetParser.Commands
                     lastField = "PinType.PinValueType";
                     var (vcat, vsub) = ReadTerminalType(r, nameMap);
                     pin.ValueCategory = vcat;
-                    pin.ValueSubObject = vsub != 0 ? ResolvePackageIndex(asset, new FPackageIndex(vsub)) : "";
+                    pin.ValueSubObject = vsub != 0 ? SerializeObjectRef(asset, new FPackageIndex(vsub)) : "";
                 }
         
                 lastField = "PinType.bIsReference";
@@ -825,10 +828,12 @@ namespace AssetParser.Commands
                         var val = strProp.Value?.ToString();
                         if (!string.IsNullOrEmpty(val)) return val;
                     }
-                    // For object references (TargetType on DynamicCast)
+                    // For object references (TargetType on DynamicCast, StructType on Make/BreakStruct).
+                    // Full object path so the materializer can LoadObject project-defined classes/structs
+                    // (e.g. a BP cast target "WBP_X_C" or a user struct "F_AI_CircleMoveData").
                     else if (prop is ObjectPropertyData objProp2 && objProp2.Value != null && objProp2.Value.Index != 0)
                     {
-                        return ResolvePackageIndex(asset, objProp2.Value);
+                        return SerializeObjectRef(asset, objProp2.Value);
                     }
                 }
                 return null;
