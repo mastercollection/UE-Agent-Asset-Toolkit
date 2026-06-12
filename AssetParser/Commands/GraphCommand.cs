@@ -171,14 +171,17 @@ namespace AssetParser.Commands
         
         // Read FEdGraphTerminalType (for Map value types — only present when ContainerType == Map)
         // Source: EdGraphPin.cpp FEdGraphTerminalType::Serialize
-        public static void ReadTerminalType(BinaryReader r, IReadOnlyList<FString> nameMap)
+        // Returns (TerminalCategory, TerminalSubCategoryObject package index) so a map's value type can
+        // be carried into the IR (the key type is the pin's own Category; the value type lives here).
+        public static (string category, int subObjIdx) ReadTerminalType(BinaryReader r, IReadOnlyList<FString> nameMap)
         {
-            ReadFNameStr(r, nameMap);  // TerminalCategory
+            string cat = ReadFNameStr(r, nameMap);  // TerminalCategory
             ReadFNameStr(r, nameMap);  // TerminalSubCategory
-            r.ReadInt32();             // TerminalSubCategoryObject (UObject*)
+            int subObj = r.ReadInt32();             // TerminalSubCategoryObject (UObject*)
             r.ReadUInt32();            // bTerminalIsConst (bool as uint32)
             r.ReadUInt32();            // bTerminalIsWeakPointer (bool as uint32)
             r.ReadUInt32();            // bTerminalIsUObjectWrapper (UE5+ only, bool as uint32)
+            return (cat, subObj);
         }
         
         // Read FSimpleMemberReference
@@ -269,7 +272,9 @@ namespace AssetParser.Commands
                 if (pin.ContainerType == 3) // Map: read PinValueType (FEdGraphTerminalType)
                 {
                     lastField = "PinType.PinValueType";
-                    ReadTerminalType(r, nameMap);
+                    var (vcat, vsub) = ReadTerminalType(r, nameMap);
+                    pin.ValueCategory = vcat;
+                    pin.ValueSubObject = vsub != 0 ? ResolvePackageIndex(asset, new FPackageIndex(vsub)) : "";
                 }
         
                 lastField = "PinType.bIsReference";
@@ -1143,7 +1148,12 @@ namespace AssetParser.Commands
                             pinData.Sub = pin.SubCategoryObject;
                         if (pin.ContainerType == 1) pinData.Container = "array";
                         else if (pin.ContainerType == 2) pinData.Container = "set";
-                        else if (pin.ContainerType == 3) pinData.Container = "map";
+                        else if (pin.ContainerType == 3)
+                        {
+                            pinData.Container = "map";
+                            if (!string.IsNullOrEmpty(pin.ValueCategory)) pinData.ValueCat = pin.ValueCategory;
+                            if (!string.IsNullOrEmpty(pin.ValueSubObject)) pinData.ValueSub = pin.ValueSubObject;
+                        }
                         if (!string.IsNullOrEmpty(pin.DefaultValue))
                             pinData.Default = pin.DefaultValue;
                         if (!string.IsNullOrEmpty(pin.TextDefault))

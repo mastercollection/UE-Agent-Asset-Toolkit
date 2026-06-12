@@ -144,6 +144,9 @@ public struct ParsedPin
     public bool IsHidden;
     public bool IsOrphaned;
     public List<(int nodeExportIndex, Guid pinGuid)> LinkedTo;
+    // Map value type (key type is Category/SubCategoryObject; this is the TMap value's terminal type).
+    public string? ValueCategory;
+    public string? ValueSubObject;
 }
 
 public class GraphPinData
@@ -153,6 +156,9 @@ public class GraphPinData
     public string Cat { get; set; } = "";
     public string? Sub { get; set; }
     public string? Container { get; set; }
+    // Map value type (only emitted for map pins): the TMap value's category and subcategory object.
+    public string? ValueCat { get; set; }
+    public string? ValueSub { get; set; }
     public string? Default { get; set; }
     // Source string of a PC_Text pin's DefaultTextValue (FText), separate from Default (the FString
     // DefaultValue). Carries e.g. FormatText's "Hello {Name}" format literal. Null when absent.
